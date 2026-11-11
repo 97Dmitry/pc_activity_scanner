@@ -1,103 +1,154 @@
 # PC Activity Scanner
 
-Local desktop process and resource monitor in **Rust**. CPU, GPU, RAM, network throughput per process where supported; searchable/sortable table, grouping, filters, session totals, pause, CSV export, history chart and optional minimize-to-tray.
+Локальный монитор процессов на Rust/egui для Windows и Linux. Показывает нагрузку
+CPU, память и общий сетевой трафик; на Linux — также доступные драйверу GPU-метрики
+и трафик по процессам через NetHogs. Данные остаются на компьютере.
 
-[Specification / acceptance criteria](docs/SPEC.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Release artifacts](https://github.com/97Dmitry/pc_activity_scanner/releases)
+[Скачать сборку](https://github.com/97Dmitry/pc_activity_scanner/releases) ·
+[Архитектура](docs/ARCHITECTURE.md) · [Спецификация](docs/SPEC.md) ·
+[Ручная проверка](docs/QA_CHECKLIST.md) · [Разработка](CONTRIBUTING.md) ·
+[Безопасность](SECURITY.md)
 
-## Скачать готовые сборки (Rust не требуется)
+![Мониторинг процессов в Linux](docs/images/monitor.png)
 
-**[Перейти к готовым сборкам — GitHub Releases](https://github.com/97Dmitry/pc_activity_scanner/releases)**
+## Готовые сборки
 
-Откройте самый новый **Snapshot** и разверните раздел **Assets**:
+В GitHub Releases выберите последнюю предварительную сборку
+`PC Activity Scanner — build N` и скачайте из Assets:
 
-- **Windows 11 x64:** `pc_activity_scanner-windows-x86_64.exe` — скачать и запустить двойным кликом без Cargo, Rust и Visual Studio.
-- **Linux x86_64 (Kubuntu/Ubuntu):** `pc_activity_scanner-linux-x86_64` — готовый исполняемый файл, Rust не требуется.
-- **Контрольная сумма:** `SHA256SUMS.txt`.
+| Система | Файл |
+|---|---|
+| Windows 11 x64 | `pc_activity_scanner-windows-x86_64.exe` |
+| Linux x86_64 | `pc_activity_scanner-linux-x86_64` |
+| Контрольные суммы | `SHA256SUMS.txt` |
 
-Новый prerelease создаётся **после каждого push в `main`, только если успешно прошли CI, тесты и release-сборки Windows/Linux**. Бинарники пока не подписаны, а полное ручное тестирование на реальных ПК ещё не завершено.
-
-### Запуск готовой Linux-сборки
-
-Скачайте файл из релиза и выполните в папке загрузки:
+Rust для запуска не требуется. Windows-сборка запускается двойным кликом.
+Для Linux нужен рабочий стол X11/Wayland и графические библиотеки. Например,
+Ubuntu/Kubuntu:
 
 ```bash
 sudo apt update
-sudo apt install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev libssl-dev
+sudo apt install libx11-6 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxkbcommon0 libwayland-client0 libgl1 libegl1 libxcursor1 libxi6 libxrandr2 libxkbcommon-x11-0
 chmod +x pc_activity_scanner-linux-x86_64
 ./pc_activity_scanner-linux-x86_64
 ```
 
-Для подробного мониторинга **трафика отдельных процессов** нужен NetHogs. Он запускается через Polkit из защищённого системного бинарника; GUI запускается без sudo:
+Каждый push в `main` публикует отдельный prerelease **после успешных проверок и
+сборок обеих ОС**. Бинарники не подписаны. Snapshot не означает, что пройдены все
+проверки на реальных Windows/Linux-машинах.
+
+## Работа с монитором
+
+- Сверху — CPU, использованная RAM и общий трафик интерфейсов. Историю CPU/RAM
+  можно свернуть, чтобы освободить место таблице.
+- Поиск принимает имя, PID или часть пути. Он применяется до группировки;
+  числовые пороги и фильтры активности — к полученным строкам или группам.
+- Нажатие на заголовок сортирует столбец, повторное нажатие меняет направление.
+  Недоступные значения `—` остаются внизу при любом направлении.
+- «GPU и итоги трафика» открывает дополнительные столбцы. В узком окне полная
+  таблица прокручивается по горизонтали.
+- Контекстное меню процесса позволяет скопировать имя, PID и путь.
+- «Экспорт CSV» сохраняет **отображаемые строки в текущем порядке** в Downloads
+  (либо текущий каталог, если Downloads не определён). Формат: UTF-8 с BOM,
+  разделитель `;`, пустые ячейки для неизвестных метрик. Формулы экранируются,
+  существующие экспорты не перезаписываются.
+- «Пауза» останавливает обновление CPU/процессов. NetHogs и NVIDIA работают
+  независимо; их выключение настраивается отдельно для NetHogs. После продолжения
+  первая общая сетевая скорость усредняется за весь интервал, включая паузу.
+- В настройках доступны интервалы 1/2/5 секунд и закрытие в трей. Если трей
+  недоступен, закрытие окна завершает программу. Кнопка «Выход» завершает её явно.
+
+## Какие метрики доступны
+
+| Метрика | Linux | Windows |
+|---|---|---|
+| CPU/RAM системы и процессов | Да | Да |
+| Общая скорость сети | Да | Да |
+| Скорость и объём трафика по PID | NetHogs, по желанию | Пока нет |
+| GPU и VRAM по PID | DRM/NVIDIA, зависит от драйвера | Пока нет |
+
+`—` означает отсутствие данных, а не нулевую нагрузку. Общий трафик никогда не
+выдаётся за трафик отдельных процессов. CPU нормализован по всем логическим
+ядрам: 100% соответствует всей вычислительной мощности CPU.
+
+Сессионный трафик — оценка по кадрам NetHogs. Кадры учитываются независимо от
+интервала обновления таблицы; очередь ограничена 256 кадрами (около 8,5 минуты).
+При переполнении статус сообщает о пропуске. Завершившиеся между опросами процессы
+могут отсутствовать; NetHogs не передаёт время старта процесса, поэтому полностью
+исключить неоднозначность очень быстрого повторного использования PID нельзя.
+Старые скорости скрываются через семь секунд без нового кадра.
+
+Общий трафик суммируется по интерфейсам без loopback; VPN и виртуальные интерфейсы
+могут давать двойной учёт. Сумма процессов не обязана совпадать с общим трафиком.
+История ограничена 120 измерениями и не сохраняется после выхода. Приложение не
+собирает посещённые сайты, содержимое окон или пакетов и не отправляет телеметрию.
+
+## Включение NetHogs на Linux
+
+GUI запускается обычным пользователем. Для захвата трафика используется отдельный
+helper через Polkit. Бинарник helper и его родительские каталоги должны принадлежать
+root и быть защищены от записи другими пользователями.
 
 ```bash
-sudo apt install -y nethogs policykit-1
+sudo apt install nethogs policykit-1
 sudo install -D -o root -g root -m 0755 pc_activity_scanner-linux-x86_64 /usr/local/bin/pc-activity-scanner
 pc-activity-scanner
 ```
 
-В Windows текущая сборка показывает CPU/RAM и общесистемный трафик; индивидуальный сетевой трафик и GPU по PID ещё не реализованы. Для KDE Plasma Wayland системный трей зависит от поддержки StatusNotifierItem.
+После установки включите «Трафик по процессам» в настройках. Появление системного
+диалога авторизации ожидаемо. Отмена отображается в статусе метрик; для повторной
+попытки выключите и включите настройку. Запуск GUI через `sudo` не требуется.
+Бинарник из пользовательского каталога сборки намеренно не допускается к повышению
+привилегий. Трей зависит от реализации рабочего стола, включая StatusNotifierItem
+в KDE Plasma Wayland.
 
-## Сборка из исходников (для разработчиков)
+## Сборка из исходников
 
+Toolchain закреплён в `rust-toolchain.toml` — Rust 1.95.0, rustfmt и Clippy.
+Используйте rustup; зависимости закреплены в `Cargo.lock`.
 
-### Linux (Kubuntu / Ubuntu)
+Ubuntu/Kubuntu:
 
 ```bash
-sudo apt update
-sudo apt install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev libssl-dev pkg-config
-# Optional per-process network metrics:
-sudo apt install -y nethogs policykit-1
-cargo run --release # CPU/RAM and unprivileged metrics
-bash scripts/install-linux.sh # root-owned installation required for NetHogs
-pc-activity-scanner
+sudo apt install build-essential pkg-config libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev libssl-dev
+cargo run --release --locked
 ```
 
-Rust **1.95+** required. Detailed NetHogs tracking requires a **root-owned executable in `/usr/local/bin`**. Development builds in user-writable directories are deliberately rejected as privileged helpers to prevent binary replacement between authorization and execution. CPU/RAM/global networking/GPU work without installation. Enable per-process network measurements in **Settings → Network**. A PolicyKit authentication dialog is expected. Running the entire UI as root is **not** recommended. On KDE Plasma Wayland, the desktop environment must expose a system tray (StatusNotifierItem) for close-to-tray.
+Arch Linux:
 
-### Windows 11
-
-Install latest stable Rust/MSVC toolchain (Visual Studio C++ build tools), then:
-
-```powershell
-cargo run --release
+```bash
+sudo pacman -S --needed base-devel pkgconf libxcb libxkbcommon wayland openssl
+cargo run --release --locked
 ```
 
-CPU, RAM and global network counters are available; detailed GPU and network measurements **per PID are not implemented on Windows yet**, so those columns show `—`. Do not treat global traffic as attributable to individual processes.
+Windows: установите rustup с MSVC toolchain и Visual Studio C++ Build Tools,
+затем выполните `cargo run --release --locked` в PowerShell.
 
-## Features
+Для системной установки собранной Linux-версии используйте
+`bash scripts/install-linux.sh`. Скрипт собирает release, затем через sudo
+устанавливает бинарник и desktop-файл в `/usr/local`.
 
-- Sortable, resizable process table with per-PID CPU (percentage of all cores), GPU (where exposed), RAM, GPU VRAM, RX/TX bytes/s, RX/TX session bytes.
-- Search by process, PID or executable path. Filters for active/network, CPU/RAM thresholds; group by process name.
-- Current total CPU/RAM and overall network RX/TX, 120-point CPU/RAM usage graph.
-- CSV export of *currently displayed* rows (UTF-8 with BOM, semicolon separator, CSV quoting, formula-injection protection and collision-free filenames).
-- Configurable 1/2/5s polling; in-memory pause and explicit exit control.
-- Optional close-to-tray with Restore/Quit menu and automatic fallback if tray unavailable.
-- Settings stored locally under per-user OS config directory. No telemetry, no internet access required for runtime.
-
-## Metrics accuracy
-
-- CPU per process is sampled (not a lifetime average), normalized to all logical cores.
-- Per-PID network traffic uses NetHogs in trace mode for Linux; its bytes/s are converted to B/s. Session totals integrate one unique frame once, so they are estimates. Some processes and short-lived flows can be missing.
-- Global network counters and sum of per-process counters will not generally match because monitoring interfaces, privilege restrictions and protocols differ.
-- Linux GPU uses DRM fdinfo, optional NVIDIA pmon, and may not work on all drivers; missing value is `—`. A GPU % is per-process sampled usage, not the sum of all GPU engines.
-- If a metric is unsupported, disabled, or permission-denied, the UI displays a status and `—` instead of 0.
-- The app doesn't persist raw process history between restarts. It does not collect visited sites or application content.
-
-## Development
+## Проверка
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-cargo build --release
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --all-targets --locked
+cargo build --release --locked
 ```
 
-Specs/tests live in [`docs/SPEC.md`](docs/SPEC.md) and the [manual QA checklist](docs/QA_CHECKLIST.md) and Rust `#[cfg(test)]` modules. GitHub Actions executes checks and publishes **pre-releases** with Windows and Linux executables on every push to `main` after both builds pass. These builds are not code-signed. Releases tagged `snapshot-<full SHA>` are immutable snapshots, not stable releases.
+Проверка запуска окна без реального монитора (Linux):
 
-## Known limitations
+```bash
+sudo apt install xvfb xauth xdotool
+LIBGL_ALWAYS_SOFTWARE=1 timeout 30s xvfb-run -a bash scripts/smoke-linux.sh
+```
 
-See the platform support table in [SPEC.md](docs/SPEC.md). In particular: no native Windows per-PID network/GPU metrics yet, GPU % is driver-specific, display-server tray integration must be smoke-tested, and elevated NetHogs access may require Polkit configuration. This is an **initial release candidate**, not a certified production deployment.
+CI выполняет эти проверки на Linux и Windows; проверка окна через Xvfb выполняется
+только на Linux. Она не заменяет ручную проверку Polkit, драйверов GPU, трея и
+нативной Windows-сборки. WSL/headless-среда не является поддерживаемой целевой
+платформой приложения.
 
-## License
+## Лицензия
 
-MIT.
+MIT — [LICENSE](LICENSE).

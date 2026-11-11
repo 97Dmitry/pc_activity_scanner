@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Default)]
 pub struct ProcessRow {
@@ -54,14 +55,14 @@ impl SortColumn {
         (Self::Gpu, "GPU %"),
         (Self::Ram, "RAM"),
         (Self::GpuMemory, "GPU RAM"),
-        (Self::Down, "↓ /c"),
-        (Self::Up, "↑ /c"),
-        (Self::TotalDown, "↓ всего"),
-        (Self::TotalUp, "↑ всего"),
+        (Self::Down, "Приём/с"),
+        (Self::Up, "Отдача/с"),
+        (Self::TotalDown, "Принято"),
+        (Self::TotalUp, "Отдано"),
     ];
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SortOrder {
     pub column: SortColumn,
     pub descending: bool,
@@ -138,7 +139,7 @@ fn compare_option<T: PartialOrd>(a: Option<T>, b: Option<T>) -> Ordering {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Filters {
     pub query: String,
     pub only_active: bool,
@@ -150,19 +151,26 @@ pub struct Filters {
 
 impl Filters {
     pub fn apply(&self, rows: &[ProcessRow], sort: SortOrder) -> Vec<ProcessRow> {
+        // Search individual identities before grouping erases PIDs and paths.
+        let query = self.query.trim().to_lowercase();
+        let matches = rows
+            .iter()
+            .filter(|p| {
+                query.is_empty()
+                    || p.name.to_lowercase().contains(&query)
+                    || p.executable.to_lowercase().contains(&query)
+                    || p.pid.to_string().contains(&query)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let mut visible = if self.group_by_name {
-            aggregate_by_name(rows)
+            aggregate_by_name(&matches)
         } else {
-            rows.to_vec()
+            matches
         };
 
-        let query = self.query.trim().to_lowercase();
         visible.retain(|p| {
-            (query.is_empty()
-                || p.name.to_lowercase().contains(&query)
-                || p.executable.to_lowercase().contains(&query)
-                || p.pid.to_string().contains(&query))
-                && p.cpu_pct >= self.minimum_cpu
+            p.cpu_pct >= self.minimum_cpu
                 && p.ram_bytes >= self.minimum_ram_mb as u64 * 1024 * 1024
                 && (!self.only_network
                     || p.down_bps.unwrap_or(0.0) > 0.0
@@ -175,6 +183,34 @@ impl Filters {
         });
         sort.sort(&mut visible);
         visible
+    }
+}
+
+#[derive(Default)]
+pub struct ProcessView {
+    updated_at: Option<std::time::Instant>,
+    filters: Option<Filters>,
+    sort: SortOrder,
+    rows: Arc<[ProcessRow]>,
+}
+
+impl ProcessView {
+    pub fn rows(
+        &mut self,
+        snapshot: &Snapshot,
+        filters: &Filters,
+        sort: SortOrder,
+    ) -> Arc<[ProcessRow]> {
+        if self.updated_at != snapshot.updated_at
+            || self.filters.as_ref() != Some(filters)
+            || self.sort != sort
+        {
+            self.rows = filters.apply(&snapshot.process_rows, sort).into();
+            self.updated_at = snapshot.updated_at;
+            self.filters = Some(filters.clone());
+            self.sort = sort;
+        }
+        Arc::clone(&self.rows)
     }
 }
 
@@ -288,6 +324,63 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(filters.apply(&data, SortOrder::default()).len(), 1);
+    }
+
+    #[test]
+    fn grouped_search_matches_original_pid() {
+        let data = [row(41, "Firefox", 2.0, None), row(51, "Firefox", 3.0, None)];
+        let filters = Filters {
+            query: "41".into(),
+            group_by_name: true,
+            ..Default::default()
+        };
+        let visible = filters.apply(&data, SortOrder::default());
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].pid, 41);
+        assert_eq!(visible[0].cpu_pct, 2.0);
+    }
+
+    #[test]
+    fn grouped_search_matches_original_executable_path() {
+        let mut a = row(41, "worker", 2.0, None);
+        a.executable = "/opt/project-a/worker".into();
+        let mut b = row(51, "worker", 3.0, None);
+        b.executable = "/opt/project-b/worker".into();
+        let filters = Filters {
+            query: "project-b".into(),
+            group_by_name: true,
+            ..Default::default()
+        };
+        let visible = filters.apply(&[a, b], SortOrder::default());
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].pid, 51);
+    }
+
+    #[test]
+    fn view_reuses_rows_until_snapshot_filters_or_sort_change() {
+        let mut view = ProcessView::default();
+        let mut snapshot = Snapshot {
+            updated_at: Some(std::time::Instant::now()),
+            process_rows: vec![row(41, "Firefox", 2.0, None), row(51, "Code", 3.0, None)],
+            ..Default::default()
+        };
+        let mut filters = Filters::default();
+        let sort = SortOrder::default();
+        let first = view.rows(&snapshot, &filters, sort);
+        assert!(Arc::ptr_eq(&first, &view.rows(&snapshot, &filters, sort)));
+        filters.query = "Firefox".into();
+        assert_eq!(view.rows(&snapshot, &filters, sort)[0].pid, 41);
+        filters.query.clear();
+        let ascending = SortOrder {
+            descending: false,
+            ..sort
+        };
+        assert_eq!(view.rows(&snapshot, &filters, ascending)[0].pid, 41);
+        snapshot.updated_at = snapshot
+            .updated_at
+            .map(|at| at + std::time::Duration::from_secs(1));
+        snapshot.process_rows[0].cpu_pct = 90.0;
+        assert_eq!(view.rows(&snapshot, &filters, ascending)[0].pid, 51);
     }
 
     #[test]

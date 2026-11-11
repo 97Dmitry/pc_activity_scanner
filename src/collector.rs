@@ -2,14 +2,14 @@ use crate::gpu::GpuUsage;
 #[cfg(target_os = "linux")]
 use crate::gpu::drm::DrmSampler;
 use crate::model::{ProcessRow, Snapshot};
-use crate::network::NetworkSample;
+use crate::network::{NetworkFrame, NetworkSample};
 use crate::nvidia::{NvidiaState, start_nvidia_sampler};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use sysinfo::{Networks, ProcessesToUpdate, System};
+use sysinfo::{Networks, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 #[derive(Default, Clone, Copy)]
 struct ProcessTrafficTotal {
@@ -25,12 +25,8 @@ struct TrafficLedger {
 }
 
 impl TrafficLedger {
-    fn record_frame(
-        &mut self,
-        net: &NetworkSample,
-        mut start_time: impl FnMut(u32) -> Option<u64>,
-    ) {
-        if !net.is_available || self.last_frame == Some((net.epoch, net.sequence)) {
+    fn record_frame(&mut self, net: &NetworkFrame, mut start_time: impl FnMut(u32) -> Option<u64>) {
+        if self.last_frame == Some((net.epoch, net.sequence)) {
             return;
         }
         self.last_frame = Some((net.epoch, net.sequence));
@@ -38,6 +34,9 @@ impl TrafficLedger {
             let Some(started) = start_time(*pid) else {
                 continue;
             };
+            if started > net.captured_at {
+                continue;
+            }
             let total = self.totals.entry((*pid, started)).or_default();
             let up = (rate.upload_bps.max(0.0) * net.seconds_per_sample.max(0.0)) as u64;
             let down = (rate.download_bps.max(0.0) * net.seconds_per_sample.max(0.0)) as u64;
@@ -57,15 +56,15 @@ impl TrafficLedger {
 }
 
 pub struct Collector {
-    pub snapshot: Arc<RwLock<Snapshot>>,
-    pub interval_ms: Arc<AtomicU64>,
+    pub snapshot: Arc<RwLock<Arc<Snapshot>>>,
+    interval_ms: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
 }
 
 impl Collector {
     pub fn start(interval: u64, traffic: Arc<Mutex<NetworkSample>>) -> Self {
-        let snapshot = Arc::new(RwLock::new(Snapshot::default()));
+        let snapshot = Arc::new(RwLock::new(Arc::new(Snapshot::default())));
         let interval_ms = Arc::new(AtomicU64::new(interval));
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
@@ -109,14 +108,23 @@ impl Drop for Collector {
 }
 
 fn run_collector(
-    output: Arc<RwLock<Snapshot>>,
+    output: Arc<RwLock<Arc<Snapshot>>>,
     interval: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     net_state: Arc<Mutex<NetworkSample>>,
     nvidia_state: Arc<RwLock<NvidiaState>>,
 ) {
-    let mut system = System::new_all();
+    let mut system = System::new();
+    // We display process CPU, memory and executable paths, not thread or disk I/O data.
+    let process_refresh = ProcessRefreshKind::nothing()
+        .with_cpu()
+        .with_memory()
+        .with_exe(UpdateKind::OnlyIfNotSet)
+        .without_tasks();
+    system.refresh_cpu_usage();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh);
+    thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     let mut networks = Networks::new_with_refreshed_list();
     let mut last_refresh = Instant::now();
     let mut traffic = TrafficLedger::default();
@@ -124,7 +132,6 @@ fn run_collector(
     let mut drm = DrmSampler::new();
     while !stop.load(Ordering::Relaxed) {
         if paused.load(Ordering::Relaxed) {
-            last_refresh = Instant::now();
             thread::sleep(Duration::from_millis(100));
             continue;
         }
@@ -133,9 +140,13 @@ fn run_collector(
         last_refresh = Instant::now();
         system.refresh_cpu_usage();
         system.refresh_memory();
-        system.refresh_processes(ProcessesToUpdate::All, true);
+        system.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh);
         networks.refresh(true);
-        let mut net = net_state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let (mut net, frames) = {
+            let mut state = net_state.lock().unwrap_or_else(|e| e.into_inner());
+            let frames = state.take_frames();
+            (state.clone(), frames)
+        };
         net.expire_if_stale(Duration::from_secs(7));
         #[cfg(target_os = "linux")]
         let pids = system
@@ -162,11 +173,13 @@ fn run_collector(
         }
 
         // A frame's (epoch, sequence) is unique across toggles and collector ticks.
-        traffic.record_frame(&net, |pid| {
-            system
-                .process(sysinfo::Pid::from_u32(pid))
-                .map(|p| p.start_time())
-        });
+        for frame in &frames {
+            traffic.record_frame(frame, |pid| {
+                system
+                    .process(sysinfo::Pid::from_u32(pid))
+                    .map(|p| p.start_time())
+            });
+        }
         traffic.retain_running(|pid, started| {
             system
                 .process(sysinfo::Pid::from_u32(pid))
@@ -235,11 +248,11 @@ fn run_collector(
             down_bps: rx_bps,
             up_bps: tx_bps,
             interface_count,
-            network_status: net.status,
+            network_status: net.status(),
             gpu_status,
             updated_at: Some(Instant::now()),
         };
-        *output.write().unwrap_or_else(|e| e.into_inner()) = next;
+        *output.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(next);
         let remaining =
             Duration::from_millis(interval.load(Ordering::Relaxed)).saturating_sub(tick.elapsed());
         let mut left = remaining;
@@ -256,13 +269,13 @@ mod tests {
     use super::*;
     use crate::network::NetworkRate;
 
-    fn frame(epoch: u64, sequence: u64, bytes_per_second: f64) -> NetworkSample {
-        let mut net = NetworkSample {
+    fn frame(epoch: u64, sequence: u64, bytes_per_second: f64) -> NetworkFrame {
+        let mut net = NetworkFrame {
             epoch,
             sequence,
-            is_available: true,
             seconds_per_sample: 2.0,
-            ..NetworkSample::default()
+            captured_at: 1000,
+            rates: HashMap::new(),
         };
         net.rates.insert(
             42,
@@ -294,5 +307,12 @@ mod tests {
         ledger.record_frame(&frame(1, 1, 1.0), |_| Some(1));
         ledger.record_frame(&frame(2, 1, 1.0), |_| Some(1));
         assert_eq!(ledger.get(42, 1).unwrap().uploaded_bytes, 4);
+    }
+
+    #[test]
+    fn buffered_frame_does_not_charge_a_process_started_after_capture() {
+        let mut ledger = TrafficLedger::default();
+        ledger.record_frame(&frame(1, 1, 50.0), |_| Some(1001));
+        assert!(ledger.get(42, 1001).is_none());
     }
 }

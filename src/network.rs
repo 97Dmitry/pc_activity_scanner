@@ -1,6 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+#[cfg(any(target_os = "linux", test))]
+const MAX_PENDING_FRAMES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NetworkRate {
@@ -9,32 +12,91 @@ pub struct NetworkRate {
 }
 
 #[derive(Clone, Debug)]
+pub struct NetworkFrame {
+    pub epoch: u64,
+    pub sequence: u64,
+    pub rates: HashMap<u32, NetworkRate>,
+    pub seconds_per_sample: f64,
+    pub captured_at: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct NetworkSample {
     pub epoch: u64,
+    #[cfg(any(target_os = "linux", test))]
     pub sequence: u64,
     pub is_available: bool,
     pub status: String,
     pub rates: HashMap<u32, NetworkRate>,
     pub last_frame_at: Option<Instant>,
-    /// The requested NetHogs sampling period, used for session traffic estimates.
-    pub seconds_per_sample: f64,
+    pending: VecDeque<NetworkFrame>,
+    dropped_frames: u64,
 }
 
 impl Default for NetworkSample {
     fn default() -> Self {
         Self {
             epoch: 0,
+            #[cfg(any(target_os = "linux", test))]
             sequence: 0,
             is_available: false,
             status: "Учёт трафика по процессам отключён".to_string(),
             rates: HashMap::new(),
             last_frame_at: None,
-            seconds_per_sample: 2.0,
+            pending: VecDeque::new(),
+            dropped_frames: 0,
         }
     }
 }
 
 impl NetworkSample {
+    fn reset_session(&mut self) {
+        let epoch = self.epoch.wrapping_add(1);
+        let pending = self.take_frames();
+        let dropped_frames = self.dropped_frames;
+        *self = Self {
+            epoch,
+            pending,
+            dropped_frames,
+            ..Self::default()
+        };
+    }
+
+    pub fn status(&self) -> String {
+        if self.dropped_frames == 0 {
+            self.status.clone()
+        } else {
+            format!(
+                "{} · пропущено кадров: {} (длительная пауза)",
+                self.status, self.dropped_frames
+            )
+        }
+    }
+
+    pub fn take_frames(&mut self) -> VecDeque<NetworkFrame> {
+        std::mem::take(&mut self.pending)
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn publish_frame(&mut self, rates: HashMap<u32, NetworkRate>, captured_at: u64) {
+        self.sequence = self.sequence.wrapping_add(1);
+        if self.pending.len() == MAX_PENDING_FRAMES {
+            self.pending.pop_front();
+            self.dropped_frames = self.dropped_frames.saturating_add(1);
+        }
+        self.pending.push_back(NetworkFrame {
+            epoch: self.epoch,
+            sequence: self.sequence,
+            rates: rates.clone(),
+            seconds_per_sample: 2.0,
+            captured_at,
+        });
+        self.rates = rates;
+        self.is_available = true;
+        self.last_frame_at = Some(Instant::now());
+        self.status = "NetHogs · получаем данные по PID".into();
+    }
+
     /// Suppress stale per-process rates if the backend stopped publishing.
     pub fn expire_if_stale(&mut self, max_age: Duration) {
         if self.is_available
@@ -51,7 +113,6 @@ impl NetworkSample {
 
 pub struct NetworkBackend {
     state: Arc<Mutex<NetworkSample>>,
-    epoch: u64,
     #[cfg(target_os = "linux")]
     session: Option<LinuxSession>,
 }
@@ -60,7 +121,6 @@ impl Default for NetworkBackend {
     fn default() -> Self {
         Self {
             state: Arc::new(Mutex::new(NetworkSample::default())),
-            epoch: 0,
             #[cfg(target_os = "linux")]
             session: None,
         }
@@ -78,13 +138,9 @@ impl NetworkBackend {
             if self.session.is_some() {
                 return Ok(());
             }
-            self.epoch = self.epoch.wrapping_add(1);
             {
                 let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                *guard = NetworkSample {
-                    epoch: self.epoch,
-                    ..NetworkSample::default()
-                };
+                guard.reset_session();
             }
             let session = LinuxSession::start(Arc::clone(&self.state))?;
             self.session = Some(session);
@@ -99,15 +155,14 @@ impl NetworkBackend {
     }
 
     pub fn disable(&mut self) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.reset_session();
+        }
         #[cfg(target_os = "linux")]
         if let Some(mut session) = self.session.take() {
-            session.stop();
+            std::thread::spawn(move || session.stop());
         }
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        *state = NetworkSample {
-            epoch: self.epoch,
-            ..NetworkSample::default()
-        };
     }
 }
 
@@ -309,6 +364,7 @@ impl LinuxSession {
             snapshot.status = "Ожидание авторизации / первых данных NetHogs…".into();
             snapshot.is_available = false;
         }
+        let epoch = state.lock().unwrap_or_else(|e| e.into_inner()).epoch;
         let state_for_errors = Arc::clone(&state);
         std::thread::spawn(move || {
             use std::io::{BufRead, BufReader};
@@ -321,42 +377,15 @@ impl LinuxSession {
                     || lowered.contains("not found")
                 {
                     let mut snapshot = state_for_errors.lock().unwrap_or_else(|e| e.into_inner());
+                    if snapshot.epoch != epoch {
+                        break;
+                    }
                     snapshot.status = format!("NetHogs: {message}");
                 }
             }
         });
-        let reader = std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader};
-            let mut frame = HashMap::new();
-            let mut saw_first_frame = false;
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                let normalized = line.trim();
-                if normalized.contains("Refreshing:") {
-                    if saw_first_frame {
-                        let mut snapshot = state.lock().unwrap_or_else(|e| e.into_inner());
-                        snapshot.sequence = snapshot.sequence.wrapping_add(1);
-                        snapshot.rates = std::mem::take(&mut frame);
-                        snapshot.is_available = true;
-                        snapshot.last_frame_at = Some(Instant::now());
-                        snapshot.status = "NetHogs · получаем данные по PID".into();
-                    }
-                    saw_first_frame = true;
-                } else if let Some((pid, rate)) = parse_nethogs_line(normalized) {
-                    // NetHogs may report one PID more than once (connections);
-                    // add the rates rather than losing them.
-                    let current: &mut NetworkRate = frame.entry(pid).or_default();
-                    current.upload_bps += rate.upload_bps;
-                    current.download_bps += rate.download_bps;
-                }
-            }
-            let mut snapshot = state.lock().unwrap_or_else(|e| e.into_inner());
-            snapshot.is_available = false;
-            snapshot.rates.clear();
-            if !snapshot.status.starts_with("NetHogs:") {
-                snapshot.status = "NetHogs завершился. Выключите и включите сбор трафика.".into();
-            }
-        });
+        let reader =
+            std::thread::spawn(move || read_trace(std::io::BufReader::new(stdout), state, epoch));
         Ok(Self {
             process: Arc::new(Mutex::new(child)),
             reader: Some(reader),
@@ -379,6 +408,10 @@ impl LinuxSession {
                     }
                     std::thread::sleep(Duration::from_millis(100));
                 }
+                // Cancel a still-pending authorization process when possible.
+                if !finished && child.kill().is_ok() {
+                    finished = child.wait().is_ok();
+                }
             } else {
                 let _ = child.kill();
                 finished = child.wait().is_ok();
@@ -390,8 +423,139 @@ impl LinuxSession {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn read_trace(output: impl std::io::BufRead, state: Arc<Mutex<NetworkSample>>, epoch: u64) {
+    let mut frame = HashMap::new();
+    let mut saw_first_frame = false;
+    let mut captured_at = 0;
+    for line in output.lines() {
+        let Ok(line) = line else { break };
+        let normalized = line.trim();
+        if normalized.contains("Refreshing:") {
+            if saw_first_frame {
+                let mut snapshot = state.lock().unwrap_or_else(|e| e.into_inner());
+                if snapshot.epoch != epoch {
+                    return;
+                }
+                snapshot.publish_frame(std::mem::take(&mut frame), captured_at);
+            }
+            saw_first_frame = true;
+            captured_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+        } else if let Some((pid, rate)) = parse_nethogs_line(normalized) {
+            // NetHogs may report one PID more than once (connections);
+            // add the rates rather than losing them.
+            let current: &mut NetworkRate = frame.entry(pid).or_default();
+            current.upload_bps += rate.upload_bps;
+            current.download_bps += rate.download_bps;
+        }
+    }
+    let mut snapshot = state.lock().unwrap_or_else(|e| e.into_inner());
+    if snapshot.epoch != epoch {
+        return;
+    }
+    snapshot.is_available = false;
+    snapshot.rates.clear();
+    if !snapshot.status.starts_with("NetHogs:") {
+        snapshot.status = "NetHogs завершился. Выключите и включите сбор трафика.".into();
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn old_reader_cannot_publish_or_clear_a_new_session() {
+        use super::*;
+        let sample = NetworkSample {
+            epoch: 2,
+            is_available: true,
+            status: "new session".into(),
+            ..NetworkSample::default()
+        };
+        let state = Arc::new(Mutex::new(sample));
+        let output = std::io::Cursor::new(b"Refreshing:\napp/42/1000 1 2\nRefreshing:\n");
+        read_trace(output, Arc::clone(&state), 1);
+        let sample = state.lock().unwrap();
+        assert_eq!(sample.status, "new session");
+        assert!(sample.is_available);
+        assert!(sample.pending.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn disabling_capture_does_not_wait_on_the_ui_thread() {
+        use super::*;
+        use std::process::{Command, Stdio};
+        let child = Command::new("sh")
+            .args(["-c", "sleep 1; cat >/dev/null"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let process = Arc::new(Mutex::new(child));
+        let mut backend = NetworkBackend::default();
+        backend.session = Some(LinuxSession {
+            process: Arc::clone(&process),
+            reader: None,
+            elevated: true,
+        });
+        let start = Instant::now();
+        backend.disable();
+        assert!(start.elapsed() < Duration::from_millis(500));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if process.lock().unwrap().try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "capture child was not reaped");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn slower_collectors_receive_every_completed_frame_once() {
+        use super::*;
+        let mut sample = NetworkSample::default();
+        for value in [10.0, 20.0, 30.0] {
+            sample.publish_frame(
+                HashMap::from([(
+                    42,
+                    NetworkRate {
+                        upload_bps: value,
+                        download_bps: 0.0,
+                    },
+                )]),
+                1000,
+            );
+        }
+        let frames = sample.take_frames();
+        assert_eq!(frames.len(), 3);
+        assert_eq!(
+            frames
+                .iter()
+                .map(|f| f.rates[&42].upload_bps * f.seconds_per_sample)
+                .sum::<f64>(),
+            120.0
+        );
+        assert!(sample.take_frames().is_empty());
+    }
+
+    #[test]
+    fn prolonged_pause_bounds_the_queue_and_reports_lost_frames() {
+        use super::*;
+        let mut sample = NetworkSample::default();
+        for _ in 0..MAX_PENDING_FRAMES + 2 {
+            sample.publish_frame(HashMap::new(), 1000);
+        }
+        let frames = sample.take_frames();
+        assert_eq!(frames.len(), MAX_PENDING_FRAMES);
+        assert_eq!(frames.front().unwrap().sequence, 3);
+        assert_eq!(sample.dropped_frames, 2);
+        assert!(sample.status().contains("2"));
+    }
+
     #[test]
     fn stale_network_frames_are_not_shown_as_live() {
         use super::{NetworkRate, NetworkSample};

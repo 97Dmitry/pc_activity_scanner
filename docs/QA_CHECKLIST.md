@@ -23,6 +23,9 @@ This project is not declared production-ready until the following pass on actual
 
 ## UI / preferences
 - [ ] Search by executable name, PID and path, including international text.
+- [ ] With grouping enabled, search a child PID and a path shared by only one same-name process; only matching processes contribute to the result.
+- [ ] At 960×600, navigation and status stay visible; settings scroll; basic/detailed tables and context-menu copying work.
+- [ ] Empty search results explain how to reset filters; first startup and pause show clear status.
 - [ ] Sort all 10 columns ascending/descending; unknown metrics stay at the bottom.
 - [ ] Toggle filters and name grouping while processes enter/exit; no crash or flickering.
 - [ ] Change polling 1/2/5 seconds; reload persisted settings after restart.
@@ -30,6 +33,8 @@ This project is not declared production-ready until the following pass on actual
 - [ ] Close-to-tray OFF: window close exits the app; no invisible background process remains.
 - [ ] Tray unavailable: app still exits on close; settings provide a useful message.
 - [ ] Pause and resume with process churn; no spurious spikes.
+- [ ] NetHogs at 5-second polling: all two-second frames contribute to session totals. A pause longer than 8.5 minutes reports dropped frames; totals are then incomplete estimates.
+- [ ] Rapidly disable/re-enable NetHogs: UI stays responsive and old helper errors/EOF do not clear the new session.
 - [ ] Export twice rapidly: both CSVs exist. Verify UTF-8 Cyrillic, delimiter, sorting, CSV escaping and Excel formula safety.
 
 ## Security / delivery

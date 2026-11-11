@@ -17,6 +17,7 @@ directories = "6.0"
 tray-icon = { version = "=0.26.1", default-features = false, features = ["ksni"] }
 
 csv = "1.4"
+tempfile = "3.27"
 
 [profile.release]
 lto = "thin"

@@ -49,27 +49,6 @@ impl Tray {
 }
 
 fn make_icon() -> Result<Icon, String> {
-    const SIZE: usize = 32;
-    let mut rgba = vec![0u8; SIZE * SIZE * 4];
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let idx = (y * SIZE + x) * 4;
-            let dx = x as f32 - 15.5;
-            let dy = y as f32 - 15.5;
-            if dx * dx + dy * dy <= 15.0 * 15.0 {
-                rgba[idx..idx + 4].copy_from_slice(&[22, 32, 55, 255]);
-                let height = if x < 11 {
-                    11
-                } else if x < 18 {
-                    18
-                } else {
-                    14
-                };
-                if (7..25).contains(&x) && y >= 27 - height && y <= 26 && x % 7 < 5 {
-                    rgba[idx..idx + 4].copy_from_slice(&[57, 209, 166, 255]);
-                }
-            }
-        }
-    }
-    Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).map_err(|e| e.to_string())
+    let icon = crate::ui::window_icon();
+    Icon::from_rgba(icon.rgba, icon.width, icon.height).map_err(|e| e.to_string())
 }

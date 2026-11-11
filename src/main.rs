@@ -9,6 +9,7 @@ mod network;
 mod nvidia;
 mod settings;
 mod tray;
+mod ui;
 
 use eframe::egui;
 use std::sync::Arc;
@@ -24,7 +25,7 @@ fn main() -> eframe::Result {
             .with_title("PC Activity Scanner")
             .with_inner_size(egui::vec2(1400.0, 860.0))
             .with_min_inner_size(egui::vec2(960.0, 600.0))
-            .with_icon(Arc::new(app::window_icon())),
+            .with_icon(Arc::new(ui::window_icon())),
         ..Default::default()
     };
     eframe::run_native(

@@ -1,7 +1,8 @@
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -44,18 +45,22 @@ impl Settings {
 
     pub fn save(&self) -> Result<PathBuf, String> {
         let path = Self::file_path().ok_or("Не удалось определить каталог настроек")?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let contents = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, contents).map_err(|e| e.to_string())?;
-        // Windows cannot atomically rename onto an existing destination.
-        if path.exists() {
-            let _ = fs::remove_file(&path);
-        }
-        fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+        self.save_to(&path)?;
         Ok(path)
+    }
+
+    fn save_to(&self, path: &Path) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .ok_or("Settings path has no parent directory")?;
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let contents = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
+        // Keep the old file intact until replacement succeeds, on Windows too.
+        let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        tmp.write_all(&contents).map_err(|e| e.to_string())?;
+        tmp.as_file().sync_all().map_err(|e| e.to_string())?;
+        tmp.persist(path).map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
@@ -71,5 +76,45 @@ mod tests {
         }
         .validated();
         assert_eq!(config.poll_interval_ms, 2000);
+    }
+
+    #[test]
+    fn saving_does_not_overwrite_an_unrelated_temporary_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let unrelated = directory.path().join("settings.json.tmp");
+        fs::write(&unrelated, b"do not overwrite").unwrap();
+        Settings::default().save_to(&path).unwrap();
+        assert_eq!(fs::read(&unrelated).unwrap(), b"do not overwrite");
+    }
+
+    #[test]
+    fn repeated_save_replaces_existing_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        Settings::default().save_to(&path).unwrap();
+        Settings {
+            poll_interval_ms: 5000,
+            close_to_tray: false,
+            ..Settings::default()
+        }
+        .save_to(&path)
+        .unwrap();
+        let saved: Settings = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved.poll_interval_ms, 5000);
+        assert!(!saved.close_to_tray);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_replacement_keeps_existing_contents_and_cleans_temp_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("settings.json");
+        fs::create_dir(&destination).unwrap();
+        let existing = destination.join("keep.json");
+        fs::write(&existing, b"existing settings").unwrap();
+        assert!(Settings::default().save_to(&destination).is_err());
+        assert_eq!(fs::read(existing).unwrap(), b"existing settings");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }
