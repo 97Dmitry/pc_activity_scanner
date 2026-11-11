@@ -43,3 +43,21 @@ Clippy and all tests, packaging tests, Linux GUI inspection at 1400x860/960x600,
 Windows/Linux CI. Review new privilege boundaries before integration. WSL/Xvfb
 cannot establish real Windows UAC, Task Scheduler, live ETW or Explorer acceptance;
 release notes must disclose this and give a concrete manual checklist.
+
+## Completed verification
+
+- Linux: 94 tests passed, one explicit fixture generator ignored; separately run
+  fixture generator passed. Formatting, Clippy, packaging tests and actionlint pass.
+- Complete Windows GNU cross-target check/Clippy pass, including bundled SQLite
+  and embedded EXE icon resource. Native Windows/MSVC CI passes the IPC token
+  level and read-only Task Scheduler query tests.
+- Windows production-helper runtime smoke passes TCP/UDP IPv4/IPv6 traffic
+  accounting and confirms its ETW session disappears after disable.
+- Native read-only Windows PowerShell protected-path checks accept known system
+  executables; task creation/UAC/logon remain manual acceptance.
+- Xvfb: 1400x860 and 960x600 process/settings layouts; controlled 12-hour fixture,
+  default short period, actual pointer zoom, two-app comparison and 80 sampled
+  chart frames across background refresh without disappearance.
+- Independent reviews found and fixed pipe token impersonation, moved-EXE startup
+  repair and successful-empty-query/shared-warning confusion; scoped re-review
+  accepted the fixes. No schema change to historical storage.
