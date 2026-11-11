@@ -63,7 +63,10 @@ impl NetworkBackend {
             self.epoch = self.epoch.wrapping_add(1);
             {
                 let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                *guard = NetworkSample { epoch: self.epoch, ..NetworkSample::default() };
+                *guard = NetworkSample {
+                    epoch: self.epoch,
+                    ..NetworkSample::default()
+                };
             }
             let session = LinuxSession::start(Arc::clone(&self.state))?;
             self.session = Some(session);
@@ -83,7 +86,10 @@ impl NetworkBackend {
             session.stop();
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        *state = NetworkSample { epoch: self.epoch, ..NetworkSample::default() };
+        *state = NetworkSample {
+            epoch: self.epoch,
+            ..NetworkSample::default()
+        };
     }
 }
 
@@ -111,8 +117,11 @@ pub fn parse_nethogs_line(line: &str) -> Option<(u32, NetworkRate)> {
     }
     let upload_kib = columns[columns.len() - 2].parse::<f64>().ok()?;
     let download_kib = columns[columns.len() - 1].parse::<f64>().ok()?;
-    if !upload_kib.is_finite() || !download_kib.is_finite()
-        || upload_kib < 0.0 || download_kib < 0.0 {
+    if !upload_kib.is_finite()
+        || !download_kib.is_finite()
+        || upload_kib < 0.0
+        || download_kib < 0.0
+    {
         return None;
     }
     Some((
@@ -245,7 +254,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn parses_command_with_spaces_and_rejects_invalid_rates() {
-        assert_eq!(super::parse_nethogs_line("/home/a/My App/8421/1000 1.5 2.5").unwrap().0, 8421);
+        assert_eq!(
+            super::parse_nethogs_line("/home/a/My App/8421/1000 1.5 2.5")
+                .unwrap()
+                .0,
+            8421
+        );
         assert!(super::parse_nethogs_line("app/5/1000 -3 1").is_none());
         assert!(super::parse_nethogs_line("app/5/1000 NaN 1").is_none());
     }

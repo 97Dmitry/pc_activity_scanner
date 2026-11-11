@@ -91,10 +91,14 @@ impl SortOrder {
             // Missing metrics must sort last in BOTH directions; "—" is not 0.
             let missing = match self.column {
                 SortColumn::Gpu => (a.gpu_pct.is_none(), b.gpu_pct.is_none()),
-                SortColumn::GpuMemory => (a.gpu_memory_bytes.is_none(), b.gpu_memory_bytes.is_none()),
+                SortColumn::GpuMemory => {
+                    (a.gpu_memory_bytes.is_none(), b.gpu_memory_bytes.is_none())
+                }
                 SortColumn::Down => (a.down_bps.is_none(), b.down_bps.is_none()),
                 SortColumn::Up => (a.up_bps.is_none(), b.up_bps.is_none()),
-                SortColumn::TotalDown => (a.downloaded_bytes.is_none(), b.downloaded_bytes.is_none()),
+                SortColumn::TotalDown => {
+                    (a.downloaded_bytes.is_none(), b.downloaded_bytes.is_none())
+                }
                 SortColumn::TotalUp => (a.uploaded_bytes.is_none(), b.uploaded_bytes.is_none()),
                 _ => (false, false),
             };
@@ -113,8 +117,14 @@ impl SortOrder {
                 SortColumn::TotalDown => compare_option(a.downloaded_bytes, b.downloaded_bytes),
                 SortColumn::TotalUp => compare_option(a.uploaded_bytes, b.uploaded_bytes),
             };
-            let order = if self.descending { order.reverse() } else { order };
-            order.then_with(|| a.name.cmp(&b.name)).then_with(|| a.pid.cmp(&b.pid))
+            let order = if self.descending {
+                order.reverse()
+            } else {
+                order
+            };
+            order
+                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| a.pid.cmp(&b.pid))
         });
     }
 }
@@ -247,7 +257,10 @@ mod tests {
     #[test]
     fn missing_metrics_are_last_regardless_of_direction() {
         let mut data = vec![row(1, "a", 1.0, None), row(2, "b", 1.0, Some(5.0))];
-        let mut sort = SortOrder { column: SortColumn::Down, descending: true };
+        let mut sort = SortOrder {
+            column: SortColumn::Down,
+            descending: true,
+        };
         sort.sort(&mut data);
         assert_eq!(data[0].pid, 2);
         sort.descending = false;

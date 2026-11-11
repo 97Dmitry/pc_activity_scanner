@@ -29,7 +29,9 @@ pub fn parse_nvidia_pmon(output: &str) -> HashMap<u32, GpuUsage> {
         // NVIDIA pmon varies its columns between driver versions. Read the
         // framebuffer column by header name instead of assuming an offset.
         if cols.first() == Some(&"#") && cols.get(1) == Some(&"gpu") {
-            fb_index = cols[1..].iter().position(|value| value.eq_ignore_ascii_case("fb"));
+            fb_index = cols[1..]
+                .iter()
+                .position(|value| value.eq_ignore_ascii_case("fb"));
             continue;
         }
         if cols.len() < 4 || cols[0].starts_with('#') {
@@ -38,11 +40,16 @@ pub fn parse_nvidia_pmon(output: &str) -> HashMap<u32, GpuUsage> {
         let Ok(pid) = cols[1].parse::<u32>() else {
             continue;
         };
-        if pid == 0 { continue; }
-        let gpu_pct = cols[3].parse::<f32>().ok()
+        if pid == 0 {
+            continue;
+        }
+        let gpu_pct = cols[3]
+            .parse::<f32>()
+            .ok()
             .filter(|v| v.is_finite())
             .map(|v| v.clamp(0.0, 100.0));
-        let gpu_memory_bytes = fb_index.and_then(|index| cols.get(index))
+        let gpu_memory_bytes = fb_index
+            .and_then(|index| cols.get(index))
             .and_then(|v| v.parse::<u64>().ok())
             .map(|mib| mib.saturating_mul(1024 * 1024));
         let sample = GpuUsage {
@@ -85,12 +92,20 @@ pub mod drm {
             } else if key == "drm-pdev" {
                 pdev = value.to_string();
             } else if key.starts_with("drm-engine-") {
-                if let Some(nanos) = value.split_whitespace().next().and_then(|s| s.parse::<u64>().ok()) {
+                if let Some(nanos) = value
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                {
                     busy_ns = busy_ns.saturating_add(nanos);
                     found_engine = true;
                 }
             } else if key == "drm-memory-vram" {
-                memory = value.split_whitespace().next().and_then(|s| s.parse::<u64>().ok()).map(|kib| kib.saturating_mul(1024));
+                memory = value
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(|kib| kib.saturating_mul(1024));
             }
         }
         if !found_engine && memory.is_none() {
@@ -122,17 +137,25 @@ pub mod drm {
             let mut result = HashMap::new();
             for &pid in pids {
                 let dir = format!("/proc/{pid}/fdinfo");
-                let Ok(entries) = fs::read_dir(dir) else { continue };
+                let Ok(entries) = fs::read_dir(dir) else {
+                    continue;
+                };
                 let mut unique = HashSet::new();
                 let mut sum_busy_ns = 0u64;
                 let mut sum_memory_bytes = 0u64;
                 let mut have_busy = false;
                 let mut have_memory = false;
                 for entry in entries.flatten() {
-                    let Ok(text) = fs::read_to_string(entry.path()) else { continue };
-                    let Some(client) = parse_fdinfo(&text) else { continue };
+                    let Ok(text) = fs::read_to_string(entry.path()) else {
+                        continue;
+                    };
+                    let Some(client) = parse_fdinfo(&text) else {
+                        continue;
+                    };
                     if let Some(identifier) = client.identifier {
-                        if !unique.insert(identifier) { continue; }
+                        if !unique.insert(identifier) {
+                            continue;
+                        }
                     } else {
                         // Missing client id: ignore to avoid double counting duplicated FDs.
                         continue;
@@ -152,11 +175,16 @@ pub mod drm {
                                 (delta as f64 / elapsed_ns * 100.0).clamp(0.0, 100.0) as f32
                             })
                         })
-                    } else { None };
-                    result.insert(pid, GpuUsage {
-                        utilization_pct: percent,
-                        memory_bytes: have_memory.then_some(sum_memory_bytes),
-                    });
+                    } else {
+                        None
+                    };
+                    result.insert(
+                        pid,
+                        GpuUsage {
+                            utilization_pct: percent,
+                            memory_bytes: have_memory.then_some(sum_memory_bytes),
+                        },
+                    );
                 }
             }
             self.previous = next;
@@ -196,7 +224,10 @@ mod tests {
     #[test]
     fn parses_extended_nvidia_pmon_header_without_misreading_jpeg_as_vram() {
         let output = "# gpu pid type sm mem enc dec jpg ofa fb command\n 0 1431 G 24 10 0 0 1 0 532 firefox\n";
-        assert_eq!(parse_nvidia_pmon(output)[&1431].memory_bytes, Some(532 * 1024 * 1024));
+        assert_eq!(
+            parse_nvidia_pmon(output)[&1431].memory_bytes,
+            Some(532 * 1024 * 1024)
+        );
     }
 
     #[test]

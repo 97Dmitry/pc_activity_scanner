@@ -25,13 +25,19 @@ struct TrafficLedger {
 }
 
 impl TrafficLedger {
-    fn record_frame(&mut self, net: &NetworkSample, mut start_time: impl FnMut(u32) -> Option<u64>) {
+    fn record_frame(
+        &mut self,
+        net: &NetworkSample,
+        mut start_time: impl FnMut(u32) -> Option<u64>,
+    ) {
         if !net.is_available || self.last_frame == Some((net.epoch, net.sequence)) {
             return;
         }
         self.last_frame = Some((net.epoch, net.sequence));
         for (pid, rate) in &net.rates {
-            let Some(started) = start_time(*pid) else { continue };
+            let Some(started) = start_time(*pid) else {
+                continue;
+            };
             let total = self.totals.entry((*pid, started)).or_default();
             let up = (rate.upload_bps.max(0.0) * net.seconds_per_sample.max(0.0)) as u64;
             let down = (rate.download_bps.max(0.0) * net.seconds_per_sample.max(0.0)) as u64;
@@ -41,7 +47,8 @@ impl TrafficLedger {
     }
 
     fn retain_running(&mut self, mut alive: impl FnMut(u32, u64) -> bool) {
-        self.totals.retain(|(pid, started), _| alive(*pid, *started));
+        self.totals
+            .retain(|(pid, started), _| alive(*pid, *started));
     }
 
     fn get(&self, pid: u32, started: u64) -> Option<ProcessTrafficTotal> {
@@ -130,13 +137,20 @@ fn run_collector(
         networks.refresh(true);
         let net = net_state.lock().unwrap_or_else(|e| e.into_inner()).clone();
         #[cfg(target_os = "linux")]
-        let pids = system.processes().keys().map(|pid| pid.as_u32()).collect::<Vec<_>>();
+        let pids = system
+            .processes()
+            .keys()
+            .map(|pid| pid.as_u32())
+            .collect::<Vec<_>>();
 
         #[cfg(target_os = "linux")]
         let mut gpu = drm.sample(&pids);
         #[cfg(not(target_os = "linux"))]
         let mut gpu: HashMap<u32, GpuUsage> = HashMap::new();
-        let nvidia = nvidia_state.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let nvidia = nvidia_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if nvidia
             .updated_at
             .is_some_and(|last| last.elapsed() < Duration::from_secs(8))
@@ -148,10 +162,13 @@ fn run_collector(
 
         // A frame's (epoch, sequence) is unique across toggles and collector ticks.
         traffic.record_frame(&net, |pid| {
-            system.process(sysinfo::Pid::from_u32(pid)).map(|p| p.start_time())
+            system
+                .process(sysinfo::Pid::from_u32(pid))
+                .map(|p| p.start_time())
         });
         traffic.retain_running(|pid, started| {
-            system.process(sysinfo::Pid::from_u32(pid))
+            system
+                .process(sysinfo::Pid::from_u32(pid))
                 .is_some_and(|p| p.start_time() == started)
         });
 
@@ -166,23 +183,25 @@ fn run_collector(
                 pid: pid_number,
                 count: 1,
                 name: process.name().to_string_lossy().to_string(),
-                executable: process.exe().map_or_else(String::new, |p| p.display().to_string()),
+                executable: process
+                    .exe()
+                    .map_or_else(String::new, |p| p.display().to_string()),
                 cpu_pct: (process.cpu_usage() / cores).clamp(0.0, 100.0),
                 gpu_pct: gpu_usage.utilization_pct,
                 gpu_memory_bytes: gpu_usage.memory_bytes,
                 ram_bytes: process.memory(),
-                down_bps: net.is_available.then_some(
-                    network_rate.map_or(0.0, |entry| entry.download_bps),
-                ),
-                up_bps: net.is_available.then_some(
-                    network_rate.map_or(0.0, |entry| entry.upload_bps),
-                ),
-                downloaded_bytes: net.is_available.then_some(
-                    total.map_or(0, |entry| entry.downloaded_bytes),
-                ),
-                uploaded_bytes: net.is_available.then_some(
-                    total.map_or(0, |entry| entry.uploaded_bytes),
-                ),
+                down_bps: net
+                    .is_available
+                    .then_some(network_rate.map_or(0.0, |entry| entry.download_bps)),
+                up_bps: net
+                    .is_available
+                    .then_some(network_rate.map_or(0.0, |entry| entry.upload_bps)),
+                downloaded_bytes: net
+                    .is_available
+                    .then_some(total.map_or(0, |entry| entry.downloaded_bytes)),
+                uploaded_bytes: net
+                    .is_available
+                    .then_some(total.map_or(0, |entry| entry.uploaded_bytes)),
             });
         }
         let mut rx_bps = 0.0;
@@ -220,8 +239,8 @@ fn run_collector(
             updated_at: Some(Instant::now()),
         };
         *output.write().unwrap_or_else(|e| e.into_inner()) = next;
-        let remaining = Duration::from_millis(interval.load(Ordering::Relaxed))
-            .saturating_sub(tick.elapsed());
+        let remaining =
+            Duration::from_millis(interval.load(Ordering::Relaxed)).saturating_sub(tick.elapsed());
         let mut left = remaining;
         while !left.is_zero() && !stop.load(Ordering::Relaxed) {
             let step = left.min(Duration::from_millis(100));
@@ -244,10 +263,13 @@ mod tests {
             seconds_per_sample: 2.0,
             ..NetworkSample::default()
         };
-        net.rates.insert(42, NetworkRate {
-            upload_bps: bytes_per_second,
-            download_bps: bytes_per_second / 2.0,
-        });
+        net.rates.insert(
+            42,
+            NetworkRate {
+                upload_bps: bytes_per_second,
+                download_bps: bytes_per_second / 2.0,
+            },
+        );
         net
     }
 

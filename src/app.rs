@@ -1,15 +1,17 @@
 //! Desktop presentation and user commands. Sampling stays on background threads.
 use crate::collector::Collector;
 use crate::export::export_csv;
-use crate::model::{Filters, ProcessRow, Snapshot, SortColumn, SortOrder, format_bytes, format_rate};
+use crate::model::{
+    Filters, ProcessRow, Snapshot, SortColumn, SortOrder, format_bytes, format_rate,
+};
 use crate::network::NetworkBackend;
 use crate::settings::Settings;
 use crate::tray::{Tray, TrayAction};
 use eframe::{self, egui};
 use egui_extras::{Column, TableBuilder};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(72, 198, 169);
@@ -46,7 +48,9 @@ impl ActivityApp {
         let settings = Settings::load();
         let mut network = NetworkBackend::default();
         let mut feedback = String::new();
-        if settings.enable_linux_traffic && let Err(err) = network.enable() {
+        if settings.enable_linux_traffic
+            && let Err(err) = network.enable()
+        {
             feedback = format!("Не удалось включить сетевой мониторинг: {err}");
         }
         let collector = Collector::start(settings.poll_interval_ms, network.shared());
@@ -139,31 +143,47 @@ impl ActivityApp {
     }
 
     fn observe(&mut self, snap: &Snapshot) {
-        if let Some(updated) = snap.updated_at && self.last_snapshot != Some(updated) {
-                self.last_snapshot = Some(updated);
-                let mem_pct = if snap.ram_total == 0 {
-                    0.0
-                } else {
-                    snap.ram_used as f32 / snap.ram_total as f32 * 100.0
-                };
-                self.history.push_back((updated, snap.cpu_pct, mem_pct));
-                if self.history.len() > MAX_HISTORY {
-                    self.history.pop_front();
-                }
+        if let Some(updated) = snap.updated_at
+            && self.last_snapshot != Some(updated)
+        {
+            self.last_snapshot = Some(updated);
+            let mem_pct = if snap.ram_total == 0 {
+                0.0
+            } else {
+                snap.ram_used as f32 / snap.ram_total as f32 * 100.0
+            };
+            self.history.push_back((updated, snap.cpu_pct, mem_pct));
+            if self.history.len() > MAX_HISTORY {
+                self.history.pop_front();
+            }
         }
     }
 
     fn header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.heading(egui::RichText::new("PC ACTIVITY SCANNER").size(23.0).strong());
-                ui.label(egui::RichText::new("Процессы, ресурсы и сетевой трафик в реальном времени").color(MUTED));
+                ui.heading(
+                    egui::RichText::new("PC ACTIVITY SCANNER")
+                        .size(23.0)
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new("Процессы, ресурсы и сетевой трафик в реальном времени")
+                        .color(MUTED),
+                );
             });
             ui.add_space(24.0);
             ui.selectable_value(&mut self.screen, Screen::Processes, "Мониторинг");
             ui.selectable_value(&mut self.screen, Screen::Settings, "Настройки");
             ui.separator();
-            if ui.button(if self.paused { "▶ Продолжить" } else { "⏸ Пауза" }).clicked() {
+            if ui
+                .button(if self.paused {
+                    "▶ Продолжить"
+                } else {
+                    "⏸ Пауза"
+                })
+                .clicked()
+            {
                 self.paused = !self.paused;
                 self.collector.set_paused(self.paused);
             }
@@ -179,22 +199,40 @@ impl ActivityApp {
     fn summary(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
         let total = snap.process_rows.len();
         ui.columns(4, |cols| {
-            summary_card(&mut cols[0], "CPU", &format!("{:.1}%", snap.cpu_pct), &format!("{total} процессов"));
             summary_card(
-                &mut cols[1], "ОПЕРАТИВНАЯ ПАМЯТЬ",
+                &mut cols[0],
+                "CPU",
+                &format!("{:.1}%", snap.cpu_pct),
+                &format!("{total} процессов"),
+            );
+            summary_card(
+                &mut cols[1],
+                "ОПЕРАТИВНАЯ ПАМЯТЬ",
                 &format_bytes(snap.ram_used),
                 &format!("из {}", format_bytes(snap.ram_total)),
             );
-            summary_card(&mut cols[2], "ЗАГРУЗКА", &format_rate(Some(snap.down_bps)),
-                &format!("{} сетевых интерфейсов", snap.interface_count));
-            summary_card(&mut cols[3], "ОТДАЧА", &format_rate(Some(snap.up_bps)),
-                "Общий трафик интерфейсов");
+            summary_card(
+                &mut cols[2],
+                "ЗАГРУЗКА",
+                &format_rate(Some(snap.down_bps)),
+                &format!("{} сетевых интерфейсов", snap.interface_count),
+            );
+            summary_card(
+                &mut cols[3],
+                "ОТДАЧА",
+                &format_rate(Some(snap.up_bps)),
+                "Общий трафик интерфейсов",
+            );
         });
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("История загрузки CPU").color(MUTED));
             ui.add_space(10.0);
-            ui.label(egui::RichText::new("зелёный — CPU, серый — RAM").color(MUTED).small());
+            ui.label(
+                egui::RichText::new("зелёный — CPU, серый — RAM")
+                    .color(MUTED)
+                    .small(),
+            );
         });
         draw_history(ui, &self.history);
         ui.add_space(10.0);
@@ -203,8 +241,11 @@ impl ActivityApp {
     fn filters(&mut self, ui: &mut egui::Ui, visible: usize, total: usize) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Процессы");
-            ui.add(egui::TextEdit::singleline(&mut self.filters.query)
-                .hint_text("Поиск: имя, PID, путь…").desired_width(270.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filters.query)
+                    .hint_text("Поиск: имя, PID, путь…")
+                    .desired_width(270.0),
+            );
             ui.checkbox(&mut self.filters.only_active, "Только активные");
             ui.checkbox(&mut self.filters.only_network, "С трафиком");
             ui.checkbox(&mut self.filters.group_by_name, "Группировать по имени");
@@ -214,10 +255,20 @@ impl ActivityApp {
         });
         ui.horizontal(|ui| {
             ui.label("CPU не менее");
-            ui.add(egui::DragValue::new(&mut self.filters.minimum_cpu).range(0.0..=100.0).suffix(" %").speed(0.5));
+            ui.add(
+                egui::DragValue::new(&mut self.filters.minimum_cpu)
+                    .range(0.0..=100.0)
+                    .suffix(" %")
+                    .speed(0.5),
+            );
             ui.add_space(10.0);
             ui.label("RAM не менее");
-            ui.add(egui::DragValue::new(&mut self.filters.minimum_ram_mb).range(0..=65536).suffix(" МиБ").speed(10));
+            ui.add(
+                egui::DragValue::new(&mut self.filters.minimum_ram_mb)
+                    .range(0..=65536)
+                    .suffix(" МиБ")
+                    .speed(10),
+            );
             ui.add_space(16.0);
             ui.label(egui::RichText::new(format!("Показано: {visible} из {total}")).color(MUTED));
         });
@@ -226,52 +277,88 @@ impl ActivityApp {
 
     fn table(&mut self, ui: &mut egui::Ui, rows: &[ProcessRow]) {
         // Horizontal scroll keeps the entire metric set available on smaller screens.
-        egui::ScrollArea::horizontal().id_salt("process-table-horizontal").show(ui, |ui| {
-            ui.set_min_width(1300.0);
-            let mut builder = TableBuilder::new(ui)
-                .id_salt("processes-table")
-                .striped(true)
-                .resizable(true)
-                .auto_shrink([false, false]);
-            for width in [210.0, 70.0, 85.0, 85.0, 95.0, 100.0, 105.0, 105.0, 110.0, 110.0] {
-                builder = builder.column(Column::initial(width).at_least(54.0).resizable(true));
-            }
-            builder.header(30.0, |mut header| {
-                for (column, label) in SortColumn::ALL {
-                    header.col(|ui| {
-                        let indicator = if self.sort.column == column {
-                            if self.sort.descending { " ▼" } else { " ▲" }
-                        } else { "" };
-                        if ui.small_button(format!("{label}{indicator}")).clicked() {
-                            self.sort.select(column);
-                        }
-                    });
+        egui::ScrollArea::horizontal()
+            .id_salt("process-table-horizontal")
+            .show(ui, |ui| {
+                ui.set_min_width(1300.0);
+                let mut builder = TableBuilder::new(ui)
+                    .id_salt("processes-table")
+                    .striped(true)
+                    .resizable(true)
+                    .auto_shrink([false, false]);
+                for width in [
+                    210.0, 70.0, 85.0, 85.0, 95.0, 100.0, 105.0, 105.0, 110.0, 110.0,
+                ] {
+                    builder = builder.column(Column::initial(width).at_least(54.0).resizable(true));
                 }
-            }).body(|body| {
-                body.rows(27.0, rows.len(), |mut table_row| {
-                    let row = &rows[table_row.index()];
-                    let selected = self.selected_pid == Some(row.pid) && row.pid != 0;
-                    table_row.set_selected(selected);
-                    table_row.col(|ui| {
-                        let name = if row.count > 1 {
-                            format!("{} ({})", row.name, row.count)
-                        } else { row.name.clone() };
-                        if ui.selectable_label(selected, name).on_hover_text(&row.executable).clicked() {
-                            self.selected_pid = (row.pid != 0).then_some(row.pid);
+                builder
+                    .header(30.0, |mut header| {
+                        for (column, label) in SortColumn::ALL {
+                            header.col(|ui| {
+                                let indicator = if self.sort.column == column {
+                                    if self.sort.descending { " ▼" } else { " ▲" }
+                                } else {
+                                    ""
+                                };
+                                if ui.small_button(format!("{label}{indicator}")).clicked() {
+                                    self.sort.select(column);
+                                }
+                            });
                         }
+                    })
+                    .body(|body| {
+                        body.rows(27.0, rows.len(), |mut table_row| {
+                            let row = &rows[table_row.index()];
+                            let selected = self.selected_pid == Some(row.pid) && row.pid != 0;
+                            table_row.set_selected(selected);
+                            table_row.col(|ui| {
+                                let name = if row.count > 1 {
+                                    format!("{} ({})", row.name, row.count)
+                                } else {
+                                    row.name.clone()
+                                };
+                                if ui
+                                    .selectable_label(selected, name)
+                                    .on_hover_text(&row.executable)
+                                    .clicked()
+                                {
+                                    self.selected_pid = (row.pid != 0).then_some(row.pid);
+                                }
+                            });
+                            table_row.col(|ui| {
+                                ui.label(if row.pid == 0 {
+                                    "—".into()
+                                } else {
+                                    row.pid.to_string()
+                                });
+                            });
+                            table_row.col(|ui| {
+                                ui.label(format!("{:.1}%", row.cpu_pct));
+                            });
+                            table_row.col(|ui| {
+                                ui.label(format_pct(row.gpu_pct));
+                            });
+                            table_row.col(|ui| {
+                                ui.label(format_bytes(row.ram_bytes));
+                            });
+                            table_row.col(|ui| {
+                                ui.label(format_optional_bytes(row.gpu_memory_bytes));
+                            });
+                            table_row.col(|ui| {
+                                ui.label(format_rate(row.down_bps));
+                            });
+                            table_row.col(|ui| {
+                                ui.label(format_rate(row.up_bps));
+                            });
+                            table_row.col(|ui| {
+                                ui.label(format_optional_bytes(row.downloaded_bytes));
+                            });
+                            table_row.col(|ui| {
+                                ui.label(format_optional_bytes(row.uploaded_bytes));
+                            });
+                        });
                     });
-                    table_row.col(|ui| { ui.label(if row.pid == 0 { "—".into() } else { row.pid.to_string() }); });
-                    table_row.col(|ui| { ui.label(format!("{:.1}%", row.cpu_pct)); });
-                    table_row.col(|ui| { ui.label(format_pct(row.gpu_pct)); });
-                    table_row.col(|ui| { ui.label(format_bytes(row.ram_bytes)); });
-                    table_row.col(|ui| { ui.label(format_optional_bytes(row.gpu_memory_bytes)); });
-                    table_row.col(|ui| { ui.label(format_rate(row.down_bps)); });
-                    table_row.col(|ui| { ui.label(format_rate(row.up_bps)); });
-                    table_row.col(|ui| { ui.label(format_optional_bytes(row.downloaded_bytes)); });
-                    table_row.col(|ui| { ui.label(format_optional_bytes(row.uploaded_bytes)); });
-                });
             });
-        });
     }
 
     fn settings_screen(&mut self, ui: &mut egui::Ui) {
@@ -280,12 +367,24 @@ impl ActivityApp {
         ui.group(|ui| {
             ui.heading("Поведение окна");
             let available = self.tray.is_some();
-            let response = ui.add_enabled(available,
-                egui::Checkbox::new(&mut self.settings.close_to_tray, "При закрытии скрывать в системный трей"));
-            if response.changed() { self.save_settings(); }
+            let response = ui.add_enabled(
+                available,
+                egui::Checkbox::new(
+                    &mut self.settings.close_to_tray,
+                    "При закрытии скрывать в системный трей",
+                ),
+            );
+            if response.changed() {
+                self.save_settings();
+            }
             if !available {
-                ui.colored_label(egui::Color32::LIGHT_RED,
-                    format!("Трей недоступен: {}", self.tray_error.as_deref().unwrap_or("нет системного трея")));
+                ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    format!(
+                        "Трей недоступен: {}",
+                        self.tray_error.as_deref().unwrap_or("нет системного трея")
+                    ),
+                );
             } else {
                 ui.label("Для полного выхода используйте меню иконки в трее или кнопку «Выход».");
             }
@@ -340,17 +439,28 @@ impl ActivityApp {
                     Err(err) => format!("Ошибка экспорта CSV: {err}"),
                 };
             }
-            ui.label(egui::RichText::new(&snapshot.network_status).color(MUTED).small());
+            ui.label(
+                egui::RichText::new(&snapshot.network_status)
+                    .color(MUTED)
+                    .small(),
+            );
             ui.separator();
-            ui.label(egui::RichText::new(&snapshot.gpu_status).color(MUTED).small());
+            ui.label(
+                egui::RichText::new(&snapshot.gpu_status)
+                    .color(MUTED)
+                    .small(),
+            );
         });
         ui.add_space(6.0);
         self.table(ui, &rows);
         if let Some(selected) = self.selected_pid
             && let Some(row) = snapshot.process_rows.iter().find(|r| r.pid == selected)
         {
-                ui.separator();
-                ui.label(format!("Выбран PID {} · {} · {}", row.pid, row.name, row.executable));
+            ui.separator();
+            ui.label(format!(
+                "Выбран PID {} · {} · {}",
+                row.pid, row.name, row.executable
+            ));
         }
     }
 }
@@ -362,8 +472,12 @@ impl eframe::App for ActivityApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let snap = self.collector.snapshot.read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let snap = self
+            .collector
+            .snapshot
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         self.observe(&snap);
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_space(8.0);
@@ -376,7 +490,9 @@ impl eframe::App for ActivityApp {
                 ui.separator();
                 ui.label(egui::RichText::new(&self.feedback).color(ACCENT));
             }
-            if self.paused { ui.label(egui::RichText::new("Обновление данных приостановлено").color(MUTED)); }
+            if self.paused {
+                ui.label(egui::RichText::new("Обновление данных приостановлено").color(MUTED));
+            }
         });
     }
 }
@@ -408,14 +524,22 @@ fn draw_history(ui: &mut egui::Ui, history: &VecDeque<(Instant, f32, f32)>) {
             egui::Stroke::new(0.5, egui::Color32::from_gray(58)),
         );
     }
-    if history.len() < 2 { return; }
+    if history.len() < 2 {
+        return;
+    }
     let len = history.len();
     for (component, color) in [(1_usize, ACCENT), (2_usize, MUTED)] {
-        let points = history.iter().enumerate().map(|(i, (_, cpu, ram))| {
-            let value = if component == 1 { *cpu } else { *ram };
-            egui::pos2(rect.left() + i as f32 / (len - 1) as f32 * rect.width(),
-                rect.bottom() - (value.clamp(0.0, 100.0) / 100.0) * rect.height())
-        }).collect::<Vec<_>>();
+        let points = history
+            .iter()
+            .enumerate()
+            .map(|(i, (_, cpu, ram))| {
+                let value = if component == 1 { *cpu } else { *ram };
+                egui::pos2(
+                    rect.left() + i as f32 / (len - 1) as f32 * rect.width(),
+                    rect.bottom() - (value.clamp(0.0, 100.0) / 100.0) * rect.height(),
+                )
+            })
+            .collect::<Vec<_>>();
         painter.add(egui::Shape::line(points, egui::Stroke::new(1.8, color)));
     }
 }
@@ -443,5 +567,9 @@ pub fn window_icon() -> egui::IconData {
             }
         }
     }
-    egui::IconData { rgba, width: SIDE as u32, height: SIDE as u32 }
+    egui::IconData {
+        rgba,
+        width: SIDE as u32,
+        height: SIDE as u32,
+    }
 }

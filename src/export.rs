@@ -37,8 +37,14 @@ pub fn export_csv(rows: &[ProcessRow]) -> Result<PathBuf, String> {
 /// Prefix potentially executable contents with an apostrophe (text literal marker).
 fn excel_safe(value: &str) -> String {
     let trimmed = value.trim_start_matches([' ', '\t', '\r', '\n']);
-    if trimmed.chars().next().is_some_and(|ch| matches!(ch, '=' | '+' | '-' | '@'))
-        || value.chars().next().is_some_and(|ch| matches!(ch, '\t' | '\r' | '\n'))
+    if trimmed
+        .chars()
+        .next()
+        .is_some_and(|ch| matches!(ch, '=' | '+' | '-' | '@'))
+        || value
+            .chars()
+            .next()
+            .is_some_and(|ch| matches!(ch, '\t' | '\r' | '\n'))
     {
         format!("'{value}")
     } else {
@@ -47,25 +53,49 @@ fn excel_safe(value: &str) -> String {
 }
 
 fn write_csv(mut output: impl Write, rows: &[ProcessRow]) -> Result<(), String> {
-    output.write_all(b"\xEF\xBB\xBF").map_err(|e| e.to_string())?;
-    let mut csv = csv::WriterBuilder::new().delimiter(b';').from_writer(output);
+    output
+        .write_all(b"\xEF\xBB\xBF")
+        .map_err(|e| e.to_string())?;
+    let mut csv = csv::WriterBuilder::new()
+        .delimiter(b';')
+        .from_writer(output);
     csv.write_record([
-        "Название", "PID", "Количество процессов", "Путь", "CPU %", "GPU %",
-        "GPU RAM (байт)", "RAM (байт)", "Загрузка (байт/с)", "Отдача (байт/с)",
-        "Загружено за сессию (байт)", "Отдано за сессию (байт)",
-    ]).map_err(|e| e.to_string())?;
+        "Название",
+        "PID",
+        "Количество процессов",
+        "Путь",
+        "CPU %",
+        "GPU %",
+        "GPU RAM (байт)",
+        "RAM (байт)",
+        "Загрузка (байт/с)",
+        "Отдача (байт/с)",
+        "Загружено за сессию (байт)",
+        "Отдано за сессию (байт)",
+    ])
+    .map_err(|e| e.to_string())?;
     for row in rows {
         csv.write_record([
-            excel_safe(&row.name), row.pid.to_string(), row.count.to_string(),
-            excel_safe(&row.executable), format!("{:.2}", row.cpu_pct),
+            excel_safe(&row.name),
+            row.pid.to_string(),
+            row.count.to_string(),
+            excel_safe(&row.executable),
+            format!("{:.2}", row.cpu_pct),
             row.gpu_pct.map(|v| format!("{v:.2}")).unwrap_or_default(),
-            row.gpu_memory_bytes.map(|v| v.to_string()).unwrap_or_default(),
+            row.gpu_memory_bytes
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
             row.ram_bytes.to_string(),
             row.down_bps.map(|v| format!("{v:.1}")).unwrap_or_default(),
             row.up_bps.map(|v| format!("{v:.1}")).unwrap_or_default(),
-            row.downloaded_bytes.map(|v| v.to_string()).unwrap_or_default(),
-            row.uploaded_bytes.map(|v| v.to_string()).unwrap_or_default(),
-        ]).map_err(|e| e.to_string())?;
+            row.downloaded_bytes
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            row.uploaded_bytes
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+        ])
+        .map_err(|e| e.to_string())?;
     }
     csv.flush().map_err(|e| e.to_string())
 }
@@ -91,7 +121,10 @@ mod tests {
             .from_reader(&bytes[3..]);
         let records = reader.records().collect::<Result<Vec<_>, _>>().unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].get(0), Some("'=HYPERLINK(\"http://example.com\")"));
+        assert_eq!(
+            records[0].get(0),
+            Some("'=HYPERLINK(\"http://example.com\")")
+        );
         assert_eq!(records[0].get(1), Some("42"));
         assert_eq!(records[0].get(3), Some("'+cmd;name"));
         assert_eq!(records[0].get(8), Some(""));

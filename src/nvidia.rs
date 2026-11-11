@@ -4,9 +4,9 @@ use std::sync::atomic::AtomicBool;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
+use std::time::Instant;
 
 #[derive(Clone, Default)]
 pub struct NvidiaState {
@@ -15,10 +15,7 @@ pub struct NvidiaState {
     pub updated_at: Option<Instant>,
 }
 
-pub fn start_nvidia_sampler(
-    stopped: Arc<AtomicBool>,
-    state: Arc<RwLock<NvidiaState>>,
-) {
+pub fn start_nvidia_sampler(stopped: Arc<AtomicBool>, state: Arc<RwLock<NvidiaState>>) {
     #[cfg(target_os = "linux")]
     std::thread::spawn(move || {
         use std::process::Command;
@@ -37,7 +34,8 @@ pub fn start_nvidia_sampler(
                     guard.updated_at = Some(Instant::now());
                 }
                 Ok(output) => {
-                    guard.status = format!("NVIDIA pmon недоступен (код {:?})", output.status.code());
+                    guard.status =
+                        format!("NVIDIA pmon недоступен (код {:?})", output.status.code());
                 }
                 Err(error) => guard.status = format!("NVIDIA pmon: {error}"),
             }

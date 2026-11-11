@@ -1,5 +1,8 @@
 //! Simple cross-platform system tray with no bundled image assets.
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder, menu::{Menu, MenuEvent, MenuId, MenuItem}};
+use tray_icon::{
+    Icon, TrayIcon, TrayIconBuilder,
+    menu::{Menu, MenuEvent, MenuId, MenuItem},
+};
 
 pub enum TrayAction {
     Show,
@@ -55,7 +58,13 @@ fn make_icon() -> Result<Icon, String> {
             let dy = y as f32 - 15.5;
             if dx * dx + dy * dy <= 15.0 * 15.0 {
                 rgba[idx..idx + 4].copy_from_slice(&[22, 32, 55, 255]);
-                let height = if x < 11 { 11 } else if x < 18 { 18 } else { 14 };
+                let height = if x < 11 {
+                    11
+                } else if x < 18 {
+                    18
+                } else {
+                    14
+                };
                 if (7..25).contains(&x) && y >= 27 - height && y <= 26 && x % 7 < 5 {
                     rgba[idx..idx + 4].copy_from_slice(&[57, 209, 166, 255]);
                 }
