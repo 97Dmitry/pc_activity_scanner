@@ -13,7 +13,8 @@
 - Unknown per-process metrics use `None` / `—`; never infer them from global
   counters. NetHogs frames must be accounted once, including frames between
   slower UI collection ticks. Bound queues and history buffers.
-- GUI runs without elevation. The Linux capture helper must remain root-owned
+- GUI runs without elevation by default; the explicitly selected Windows Highest
+  startup mode is the exception. The Linux capture helper must remain root-owned
   with protected ancestors; do not weaken this for development convenience.
 - Windows `autostart` queries actual per-user Task Scheduler state. Preserve the
   original user SID across UAC, validate task ownership, and require a protected

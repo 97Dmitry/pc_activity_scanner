@@ -91,6 +91,25 @@ pub fn decode(data: &[u8]) -> Option<Frame> {
     })
 }
 
+/// Completion of an asynchronous smoke-test phase. Each consumed frame is added
+/// once; an incomplete direction must never pass because the other is complete.
+#[derive(Default)]
+pub struct ByteProgress {
+    pub uploaded: u64,
+    pub downloaded: u64,
+}
+
+impl ByteProgress {
+    pub fn add(&mut self, (uploaded, downloaded): (u64, u64)) {
+        self.uploaded = self.uploaded.saturating_add(uploaded);
+        self.downloaded = self.downloaded.saturating_add(downloaded);
+    }
+
+    pub fn complete(&self, expected: u64) -> bool {
+        self.uploaded >= expected && self.downloaded >= expected
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +146,32 @@ mod tests {
         let mut invalid = encoded;
         invalid[48..56].fill(0);
         assert!(decode(&invalid).is_none());
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn completion_accumulates_late_frames_and_requires_both_directions() {
+        let mut progress = ByteProgress::default();
+        progress.add((564_224, 563_200));
+        assert!(!progress.complete(582_656));
+        progress.add((18_432, 18_432));
+        assert!(!progress.complete(582_656));
+        progress.add((0, 1024));
+        assert!(progress.complete(582_656));
+        assert_eq!((progress.uploaded, progress.downloaded), (582_656, 582_656));
+    }
+
+    #[test]
+    fn incomplete_counts_remain_incomplete_without_new_data() {
+        let mut progress = ByteProgress::default();
+        progress.add((582_656, 581_632));
+        for _ in 0..120 {
+            progress.add((0, 0));
+            assert!(!progress.complete(582_656));
+        }
     }
 }

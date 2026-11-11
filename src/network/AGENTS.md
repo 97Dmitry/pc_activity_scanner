@@ -12,3 +12,6 @@
   identity. Header PID is not network-event payload PID. Missing/unreadable PIDs
   are unknown, not inferred zero. Keep protocol/accounting tests and Windows
   native TCP/UDP IPv4/IPv6 smoke coverage when changing these contracts.
+- ETW FLUSH is not a consumer/IPC completion barrier. Runtime checks must wait
+  for cumulative expected bytes with a bounded deadline; fixed sleeps can reject
+  delayed frames. Never hide a shortfall with a percentage tolerance.
