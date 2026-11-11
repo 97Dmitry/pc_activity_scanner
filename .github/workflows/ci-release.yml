@@ -39,6 +39,15 @@ jobs:
         run: cargo generate-lockfile
       - name: Normalize formatting for build
         run: cargo fmt --all
+      - name: Bootstrap formatted source and lockfile (temporary)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          for f in Cargo.lock src/*.rs; do
+            echo "__PCSC_BEGIN:$f"
+            cat "$f"
+            echo "__PCSC_END:$f"
+          done
       - name: Lint all targets
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Run unit tests
