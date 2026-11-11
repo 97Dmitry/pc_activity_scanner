@@ -33,7 +33,7 @@ CPU, RAM and global network counters are available; detailed GPU and network mea
 - Sortable, resizable process table with per-PID CPU (percentage of all cores), GPU (where exposed), RAM, GPU VRAM, RX/TX bytes/s, RX/TX session bytes.
 - Search by process, PID or executable path. Filters for active/network, CPU/RAM thresholds; group by process name.
 - Current total CPU/RAM and overall network RX/TX, 120-point CPU/RAM usage graph.
-- CSV export of *currently displayed* rows (UTF-8 with BOM, semicolon separator, quotes escaped by CSV writer).
+- CSV export of *currently displayed* rows (UTF-8 with BOM, semicolon separator, CSV quoting, formula-injection protection and collision-free filenames).
 - Configurable 1/2/5s polling; in-memory pause and explicit exit control.
 - Optional close-to-tray with Restore/Quit menu and automatic fallback if tray unavailable.
 - Settings stored locally under per-user OS config directory. No telemetry, no internet access required for runtime.
@@ -56,7 +56,7 @@ cargo test --all-targets
 cargo build --release
 ```
 
-Specs/tests live in [`docs/SPEC.md`](docs/SPEC.md) and Rust `#[cfg(test)]` modules. GitHub Actions executes checks and publishes **pre-releases** with Windows and Linux executables on every push to `main` after both builds pass. These builds are not code-signed. Releases tagged `snapshot-<full SHA>` are immutable snapshots, not stable releases.
+Specs/tests live in [`docs/SPEC.md`](docs/SPEC.md) and the [manual QA checklist](docs/QA_CHECKLIST.md) and Rust `#[cfg(test)]` modules. GitHub Actions executes checks and publishes **pre-releases** with Windows and Linux executables on every push to `main` after both builds pass. These builds are not code-signed. Releases tagged `snapshot-<full SHA>` are immutable snapshots, not stable releases.
 
 ## Known limitations
 

@@ -23,7 +23,7 @@ Linux CPU percentages are normalized across logical cores (100% = all logical CP
 ## User scenarios and acceptance criteria
 
 1. **Live overview.** Open the app and see total CPU, used/total memory, total RX/TX rate and a sorted process table. The UI must remain responsive while sampling runs in worker threads.
-2. **Explore usage.** Search by executable name, path, or PID. Filter active apps, apps consuming network traffic, minimum CPU and RAM. Group same-name processes. Sort by clicking any metric header and flip direction by clicking again. Export exactly the visible, sorted results to CSV.
+2. **Explore usage.** Search by executable name, path, or PID. Filter active apps, apps consuming network traffic, minimum CPU and RAM. Group same-name processes. Sort by clicking any metric header and flip direction by clicking again. Export exactly the visible, sorted results to CSV without spreadsheet formula injection or overwriting existing files.
 3. **Close-to-tray.** Settings include `close_to_tray`; if a tray is available, a close request hides the window without terminating sampling. The tray menu allows restoring the window or quitting explicitly. If the tray cannot initialize, closing terminates normally and the settings page explains why.
 4. **Opt-in privileged network sampling.** Installing NetHogs is optional. Enabling it may open the system Polkit dialog; cancelling leaves metric unavailable and shows a diagnostic. A child monitor must be stopped when disabled or when exiting. No shell command interpolation.
 5. **Configuration.** Settings persist in the user's OS configuration directory as JSON. Invalid polling intervals normalize to a safe default. GUI supports 1, 2, 5 seconds.
@@ -47,7 +47,7 @@ Linux CPU percentages are normalized across logical cores (100% = all logical CP
 - GPU: parse fdinfo and NVIDIA pmon responses; keep unknown states explicit.
 - Accounting: deduplicate NetHogs frame sequence and isolate reused PIDs by `(pid, start_time)`.
 - Settings: validate malformed interval, preserve close-to-tray across JSON serialization.
-- Export: preserve column order, UTF-8 text, quoting and missing values.
+- Export: preserve column order, UTF-8 text, quoting, missing values; neutralize spreadsheet formulas and avoid filename collisions.
 - CI: compilation and tests on Linux and Windows; emit release only after checks pass.
 
 ## Known limits / planned future work
