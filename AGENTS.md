@@ -4,7 +4,7 @@
   behind `cfg(target_os = ...)`; both CI builds are required.
 - `model` owns filtering, grouping, sorting and display caching. `collector`
   owns sysinfo sampling and `(pid, start_time)` traffic accounting. `network`
-  owns NetHogs parsing, frame delivery and helper lifetime. UI must not wait
+  owns NetHogs/Windows ETW parsing, frame delivery and helper lifetime. UI must not wait
   for subprocess shutdown or perform resource sampling.
 - `history` owns aggregation, all SQLite access/migrations and bounded worker
   queues. Collector snapshots carry UTC time, contiguous duration and process
@@ -15,6 +15,12 @@
   slower UI collection ticks. Bound queues and history buffers.
 - GUI runs without elevation. The Linux capture helper must remain root-owned
   with protected ancestors; do not weaken this for development convenience.
+- Windows `autostart` queries actual per-user Task Scheduler state. Preserve the
+  original user SID across UAC, validate task ownership, and require a protected
+  executable/ancestor ACL chain for Highest. Never expose arbitrary privileged
+  commands or perform task/PowerShell work on the GUI thread.
+- History query failures are distinct from recording/storage warnings. Keep the
+  displayed query and snapshot paired during background refresh and CSV export.
 - Tests belong beside the Rust implementation. For accounting/parsers/settings,
   reproduce defects before fixing them. Required checks: `cargo fmt --all --
   --check`, `cargo clippy --all-targets --locked -- -D warnings`,

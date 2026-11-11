@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 const MAX_PENDING_FRAMES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -18,16 +18,20 @@ pub struct NetworkFrame {
     pub rates: HashMap<u32, NetworkRate>,
     pub seconds_per_sample: f64,
     pub captured_at: u64,
+    pub process_lifetimes: HashMap<u32, u64>,
+    pub exact_bytes: HashMap<u32, (u64, u64)>,
 }
 
 #[derive(Clone, Debug)]
 pub struct NetworkSample {
     pub epoch: u64,
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
     pub sequence: u64,
     pub is_available: bool,
     pub status: String,
     pub rates: HashMap<u32, NetworkRate>,
+    #[cfg(target_os = "windows")]
+    pub process_lifetimes: HashMap<u32, u64>,
     pub last_frame_at: Option<Instant>,
     pending: VecDeque<NetworkFrame>,
     dropped_frames: u64,
@@ -37,11 +41,13 @@ impl Default for NetworkSample {
     fn default() -> Self {
         Self {
             epoch: 0,
-            #[cfg(any(target_os = "linux", test))]
+            #[cfg(any(target_os = "linux", target_os = "windows", test))]
             sequence: 0,
             is_available: false,
             status: "Учёт трафика по процессам отключён".to_string(),
             rates: HashMap::new(),
+            #[cfg(target_os = "windows")]
+            process_lifetimes: HashMap::new(),
             last_frame_at: None,
             pending: VecDeque::new(),
             dropped_frames: 0,
@@ -77,8 +83,20 @@ impl NetworkSample {
         std::mem::take(&mut self.pending)
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
     #[cfg(any(target_os = "linux", test))]
     fn publish_frame(&mut self, rates: HashMap<u32, NetworkRate>, captured_at: u64) {
+        self.publish_timed_frame(rates, captured_at, 2.0, "NetHogs · получаем данные по PID");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
+    fn publish_timed_frame(
+        &mut self,
+        rates: HashMap<u32, NetworkRate>,
+        captured_at: u64,
+        seconds: f64,
+        status: &str,
+    ) {
         self.sequence = self.sequence.wrapping_add(1);
         if self.pending.len() == MAX_PENDING_FRAMES {
             self.pending.pop_front();
@@ -88,13 +106,15 @@ impl NetworkSample {
             epoch: self.epoch,
             sequence: self.sequence,
             rates: rates.clone(),
-            seconds_per_sample: 2.0,
+            seconds_per_sample: seconds,
             captured_at,
+            process_lifetimes: HashMap::new(),
+            exact_bytes: HashMap::new(),
         });
         self.rates = rates;
         self.is_available = true;
         self.last_frame_at = Some(Instant::now());
-        self.status = "NetHogs · получаем данные по PID".into();
+        self.status = status.into();
     }
 
     /// Suppress stale per-process rates if the backend stopped publishing.
@@ -106,7 +126,7 @@ impl NetworkSample {
         {
             self.is_available = false;
             self.rates.clear();
-            self.status = "NetHogs: нет новых данных, последняя скорость устарела".into();
+            self.status = "Нет новых данных трафика, последняя скорость устарела".into();
         }
     }
 }
@@ -115,6 +135,8 @@ pub struct NetworkBackend {
     state: Arc<Mutex<NetworkSample>>,
     #[cfg(target_os = "linux")]
     session: Option<LinuxSession>,
+    #[cfg(target_os = "windows")]
+    session: Option<windows::WindowsSession>,
 }
 
 impl Default for NetworkBackend {
@@ -122,6 +144,8 @@ impl Default for NetworkBackend {
         Self {
             state: Arc::new(Mutex::new(NetworkSample::default())),
             #[cfg(target_os = "linux")]
+            session: None,
+            #[cfg(target_os = "windows")]
             session: None,
         }
     }
@@ -146,7 +170,20 @@ impl NetworkBackend {
             self.session = Some(session);
             Ok(())
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "windows")]
+        {
+            if self.session.is_some() {
+                return Ok(());
+            }
+            {
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.reset_session();
+                state.status = "Windows ETW: ожидание подтверждения UAC".into();
+            }
+            self.session = Some(windows::WindowsSession::start(Arc::clone(&self.state))?);
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.status = "Для этой ОС пока нет счётчика трафика по PID".into();
@@ -158,6 +195,10 @@ impl NetworkBackend {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.reset_session();
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(mut session) = self.session.take() {
+            session.stop();
         }
         #[cfg(target_os = "linux")]
         if let Some(mut session) = self.session.take() {
@@ -636,3 +677,15 @@ mod tests {
         assert!(super::parse_nethogs_line("unknown TCP/0/0 1.0 1.0").is_none());
     }
 }
+
+#[cfg(any(target_os = "windows", test))]
+mod windows_protocol;
+
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub(crate) use windows::process_creation_time;
+#[cfg(target_os = "windows")]
+pub use windows::run_helper_if_requested as run_windows_helper_if_requested;
+#[cfg(target_os = "windows")]
+pub use windows::run_smoke_test as run_windows_network_smoke_test;

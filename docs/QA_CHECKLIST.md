@@ -38,9 +38,11 @@ This project is not declared production-ready until the following pass on actual
 - [ ] Export twice rapidly: both CSVs exist. Verify UTF-8 Cyrillic, delimiter, sorting, CSV escaping and Excel formula safety.
 
 ## Persistent history / analytics
+- [ ] Observe graphs across multiple 15-second background refreshes; data does not disappear and scroll position stays stable.
+- [ ] At 960×600 and larger, 14px axes/ticks remain readable; drag either direction to zoom (min60s), verify ranking/CSV share the range, then reset to15 minutes.
 - [ ] A fresh profile shows live resources and an honest empty history; points appear as recording proceeds.
 - [ ] Record for over a minute, exit normally, restart and verify stored points/applications remain.
-- [ ] 1/6/12/24-hour ranges and Earlier/Later/Now select the displayed window; exited apps remain inspectable.
+- [ ] 5/15/30-minute and 1/6/12/24-hour ranges and Earlier/Later/Now select the displayed window; exited apps remain inspectable.
 - [ ] Ranking identifies executables with equal names/different paths, and distinguishes CPU contribution from observed-time CPU average.
 - [ ] Select an app, inspect CPU/RAM/GPU/network plots, compare up to four apps, change metrics and search.
 - [ ] Hover reports actual bucket times/values; CPU/GPU axis stays 0–100; offline, unknown and partial intervals are not bridged.
@@ -51,7 +53,16 @@ This project is not declared production-ready until the following pass on actual
 - [ ] Long synthetic 12-hour fixtures/reopen/query tests pass; a real overnight 12-hour session remains a separate acceptance check.
 
 ## Security / delivery
-- [ ] On Windows, only CPU/RAM and global networking have values: unsupported per-PID metrics show `—`.
+- [ ] Windows: enable per-app ETW capture, accept/cancel UAC, check real TCP/UDP traffic and historical byte totals; disabled/unavailable intervals remain unknown.
+- [ ] Windows: IPv4/IPv6 loopback runtime smoke passes in CI; real browser downloads remain a separate desktop check.
+- [ ] Windows: disable capture and close GUI while UAC is pending; late confirmation must not leave an active capture session.
+- [ ] Windows: lost ETW events/helper failure show unavailable, and stale callbacks cannot overwrite a newer capture session.
+- [ ] Windows: configure/remove ordinary login startup, re-query state, sign out/in, verify interactive UI and one task per user.
+- [ ] Windows: elevated startup rejects Downloads/user-writable/reparse locations; protected Program Files copy can configure Highest. Cancel UAC and recover via Check state.
+- [ ] Windows: move portable EXE, re-query stale task, repair/downgrade/remove it; unrelated task collisions fail closed.
+- [ ] Windows: alternate UAC credentials do not change task principal; standard user cannot select automatic Highest.
+- [ ] Windows: inspect icon in Explorer/shortcut/taskbar/tray at 100/125/150/200% DPI, dark/light taskbar; no generic EXE icon.
+- [ ] Windows: unsupported GPU metrics continue showing `—`.
 - [ ] No outbound telemetry or background updates; no logs containing packet payloads or private window content.
 - [ ] All Actions jobs pass for each release SHA; binary artifacts download and launch.
 - [ ] Release uses a version tag matching Cargo.toml/Cargo.lock, includes both platform archives and standalone binaries with SHA256 checksums, and appears as Latest. Release notes disclose known limits and completed checks; code signing remains planned.

@@ -93,6 +93,8 @@ pub struct HistoryStatus {
 #[derive(Clone, Debug, Default)]
 pub struct HistoryView {
     pub request_id: u64,
+    /// Query outcome is independent from sticky recording/storage warnings.
+    pub query_error: Option<String>,
     pub data: HistoryData,
     pub status: HistoryStatus,
 }

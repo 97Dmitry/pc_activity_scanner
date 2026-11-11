@@ -36,6 +36,14 @@ pub struct ActivityApp {
     history_ui: HistoryUi,
     confirm_clear_history: bool,
     network: NetworkBackend,
+    #[cfg(target_os = "windows")]
+    startup: crate::autostart::Controller,
+    #[cfg(target_os = "windows")]
+    startup_current: Option<crate::autostart::State>,
+    #[cfg(target_os = "windows")]
+    startup_draft: crate::autostart::State,
+    #[cfg(target_os = "windows")]
+    startup_error: Option<String>,
     tray: Option<Tray>,
     tray_error: Option<String>,
     exiting: bool,
@@ -54,10 +62,12 @@ impl ActivityApp {
         let mut settings = Settings::load();
         let mut network = NetworkBackend::default();
         let mut feedback = String::new();
-        if settings.enable_linux_traffic
+        if ((cfg!(target_os = "linux") && settings.enable_linux_traffic)
+            || (cfg!(target_os = "windows") && settings.enable_windows_traffic))
             && let Err(err) = network.enable()
         {
             settings.enable_linux_traffic = false;
+            settings.enable_windows_traffic = false;
             let _ = settings.save();
             feedback = format!("Не удалось включить сетевой мониторинг: {err}");
         }
@@ -85,7 +95,21 @@ impl ActivityApp {
                 ctx.request_repaint();
             }
         });
+        #[cfg(target_os = "windows")]
+        let startup = {
+            let mut controller = crate::autostart::Controller::new();
+            controller.query();
+            controller
+        };
         Self {
+            #[cfg(target_os = "windows")]
+            startup,
+            #[cfg(target_os = "windows")]
+            startup_current: None,
+            #[cfg(target_os = "windows")]
+            startup_draft: crate::autostart::State::default(),
+            #[cfg(target_os = "windows")]
+            startup_error: None,
             settings,
             filters: Filters::default(),
             process_view: ProcessView::default(),
@@ -157,9 +181,14 @@ impl ActivityApp {
     fn set_network(&mut self, enabled: bool) {
         if enabled {
             match self.network.enable() {
-                Ok(()) => self.feedback = "Мониторинг трафика по процессам включён".into(),
+                Ok(()) => {
+                    self.feedback =
+                        "Запрошен запуск сборщика трафика; ожидаем авторизацию и первые данные"
+                            .into()
+                }
                 Err(err) => {
                     self.settings.enable_linux_traffic = false;
+                    self.settings.enable_windows_traffic = false;
                     self.feedback = err;
                 }
             }
@@ -339,8 +368,74 @@ impl ActivityApp {
         ui.add_space(6.0);
     }
 
+    fn network_history_status(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("Сбор сети сейчас: {}", snap.network_status));
+            if ui.small_button("Настроить сбор").clicked() {
+                self.screen = Screen::Settings;
+            }
+        });
+        ui.label(egui::RichText::new("«—» в трафике означает отсутствие измерений. Включение сбора не восстанавливает прошлые интервалы.").small().color(MUTED));
+        ui.add_space(6.0);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn startup_settings(&mut self, ui: &mut egui::Ui) {
+        if let Some(result) = self.startup.poll() {
+            match result {
+                Ok(state) => {
+                    self.startup_current = Some(state);
+                    self.startup_draft = state;
+                    self.startup_error = None;
+                }
+                Err(error) => {
+                    self.startup_current = None;
+                    self.startup_error = Some(error);
+                }
+            }
+        }
+        ui.add_space(12.0);
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.heading("Запуск вместе с Windows");
+            let busy = self.startup.is_busy();
+            ui.add_enabled_ui(!busy && self.startup_current.is_some(), |ui| {
+                ui.checkbox(&mut self.startup_draft.enabled, "Запускать при входе в Windows");
+                ui.add_enabled(self.startup_draft.enabled, egui::Checkbox::new(
+                    &mut self.startup_draft.elevated, "Запускать приложение с правами администратора"));
+            });
+            ui.label("Изменение автозапуска требует подтверждения UAC. Настройка действует только для текущего пользователя.");
+            if self.startup_draft.elevated && self.startup_draft.enabled {
+                ui.colored_label(crate::ui::RAM, "Повышенные права получит всё приложение. Для учёта сети достаточно отдельного сборщика.");
+            }
+            ui.horizontal_wrapped(|ui| {
+                if ui.add_enabled(!busy && self.startup_current.is_some(),
+                    egui::Button::new("Применить автозапуск")).clicked() {
+                    self.startup.configure(self.startup_draft);
+                }
+                if ui.add_enabled(!busy, egui::Button::new("Проверить состояние")).clicked() {
+                    self.startup.query();
+                }
+                if busy { ui.spinner(); ui.label("Ожидаем ответ Windows / подтверждение UAC…"); }
+            });
+            ui.label("«Применить» также обновляет путь к текущей копии программы после переноса.");
+            ui.label("Режим администратора требует защищённой установки: перенесите EXE в Program Files с подтверждением Windows. Из Downloads доступен обычный автозапуск.");
+            if let Some(actual) = self.startup_current {
+                if actual.needs_repair {
+                    ui.colored_label(crate::ui::RAM, "Задача найдена, но её путь или параметры требуют обновления. Проверьте режим и нажмите «Применить автозапуск».");
+                }
+                ui.label(if !actual.enabled { "В Windows: автозапуск выключен" }
+                    else if actual.elevated { "В Windows: автозапуск с правами администратора" }
+                    else { "В Windows: обычный автозапуск" });
+            }
+            if let Some(error) = &self.startup_error { ui.colored_label(egui::Color32::LIGHT_RED, error); }
+        });
+    }
+
     fn settings_screen(&mut self, ui: &mut egui::Ui) {
         ui.heading("Настройки");
+        #[cfg(target_os = "windows")]
+        self.startup_settings(ui);
         ui.add_space(12.0);
         ui.group(|ui| {
             ui.set_min_width(ui.available_width());
@@ -385,15 +480,23 @@ impl ActivityApp {
                     self.save_settings();
                 }
             });
-            let previous = self.settings.enable_linux_traffic;
-            ui.add_enabled(cfg!(target_os = "linux"), egui::Checkbox::new(&mut self.settings.enable_linux_traffic,
-                "Трафик по процессам (Linux: NetHogs с правами администратора)"));
-            if previous != self.settings.enable_linux_traffic {
+            #[cfg(target_os = "linux")]
+            if ui.checkbox(&mut self.settings.enable_linux_traffic,
+                "Трафик по приложениям (NetHogs, запрос прав администратора)").changed() {
                 self.set_network(self.settings.enable_linux_traffic);
             }
+            #[cfg(target_os = "windows")]
+            if ui.checkbox(&mut self.settings.enable_windows_traffic,
+                "Трафик по приложениям (Windows ETW, запрос UAC)").changed() {
+                self.set_network(self.settings.enable_windows_traffic);
+            }
+            ui.label("Включённый сборщик запускается вместе с приложением. Для отказа в доступе или пропусков данные остаются неизвестными.");
+            let network_status = self.collector.snapshot.read().unwrap_or_else(|e| e.into_inner()).network_status.clone();
+            ui.label(format!("Сеть по приложениям: {network_status}"));
             ui.label("CPU/RAM и общий сетевой трафик доступны без повышения привилегий.");
             ui.label("GPU: Linux DRM fdinfo; NVIDIA pmon при поддержке драйвером.");
-            ui.label("На Windows детализация GPU и сети по PID пока недоступна — это отображается как «—».");
+            #[cfg(target_os = "windows")]
+            ui.label("GPU по приложениям на Windows пока недоступен — отображается «—».");
         });
         ui.add_space(12.0);
         ui.group(|ui| {
@@ -557,10 +660,12 @@ impl eframe::App for ActivityApp {
                     .show(ui, &self.history_service, HistoryMode::Overview)
             }
             Screen::History => {
+                self.network_history_status(ui, &snap);
                 self.history_ui
                     .show(ui, &self.history_service, HistoryMode::Applications)
             }
             Screen::Compare => {
+                self.network_history_status(ui, &snap);
                 self.history_ui
                     .show(ui, &self.history_service, HistoryMode::Compare)
             }

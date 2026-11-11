@@ -1,4 +1,4 @@
-//! Simple cross-platform system tray with no bundled image assets.
+//! Cross-platform system tray with dedicated small-size artwork.
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuId, MenuItem},
@@ -49,6 +49,6 @@ impl Tray {
 }
 
 fn make_icon() -> Result<Icon, String> {
-    let icon = crate::ui::window_icon();
+    let icon = crate::icon::tray();
     Icon::from_rgba(icon.rgba, icon.width, icon.height).map_err(|e| e.to_string())
 }

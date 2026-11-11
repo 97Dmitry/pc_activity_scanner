@@ -10,6 +10,7 @@ pub struct Settings {
     pub close_to_tray: bool,
     pub poll_interval_ms: u64,
     pub enable_linux_traffic: bool,
+    pub enable_windows_traffic: bool,
     pub history_enabled: bool,
     pub history_retention_days: u32,
 }
@@ -20,6 +21,7 @@ impl Default for Settings {
             close_to_tray: true,
             poll_interval_ms: 2000,
             enable_linux_traffic: false,
+            enable_windows_traffic: false,
             history_enabled: true,
             history_retention_days: 1,
         }
@@ -81,6 +83,7 @@ mod tests {
             r#"{"close_to_tray":false,"poll_interval_ms":5000,"enable_linux_traffic":true}"#;
         let config: Settings = serde_json::from_str(old_json).unwrap();
         let saved = serde_json::to_value(config.validated()).unwrap();
+        assert_eq!(saved["enable_windows_traffic"], false);
         assert_eq!(saved["history_enabled"], true);
         assert_eq!(saved["history_retention_days"], 1);
         assert_eq!(saved["poll_interval_ms"], 5000);

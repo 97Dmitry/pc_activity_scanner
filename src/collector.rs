@@ -56,6 +56,7 @@ impl SamplingClock {
 struct ProcessTrafficTotal {
     uploaded_bytes: u64,
     downloaded_bytes: u64,
+    created: Option<u64>,
 }
 
 /// Pure accounting logic, independently unit-tested with synthetic process lifetimes.
@@ -66,33 +67,59 @@ struct TrafficLedger {
 }
 
 impl TrafficLedger {
-    fn record_frame(&mut self, net: &NetworkFrame, mut start_time: impl FnMut(u32) -> Option<u64>) {
+    fn record_frame(
+        &mut self,
+        net: &NetworkFrame,
+        mut start_time: impl FnMut(u32) -> Option<(u64, Option<u64>)>,
+    ) {
         if self.last_frame == Some((net.epoch, net.sequence)) {
             return;
         }
         self.last_frame = Some((net.epoch, net.sequence));
         for (pid, rate) in &net.rates {
-            let Some(started) = start_time(*pid) else {
+            let Some((started, created)) = start_time(*pid) else {
                 continue;
             };
             if started > net.captured_at {
                 continue;
             }
+            if net.process_lifetimes.get(pid).copied() != created {
+                continue;
+            }
             let total = self.totals.entry((*pid, started)).or_default();
+            if total.created != created {
+                *total = ProcessTrafficTotal {
+                    created,
+                    ..Default::default()
+                };
+            }
             let up = (rate.upload_bps.max(0.0) * net.seconds_per_sample.max(0.0)) as u64;
             let down = (rate.download_bps.max(0.0) * net.seconds_per_sample.max(0.0)) as u64;
+            let (up, down) = net.exact_bytes.get(pid).copied().unwrap_or((up, down));
             total.uploaded_bytes = total.uploaded_bytes.saturating_add(up);
             total.downloaded_bytes = total.downloaded_bytes.saturating_add(down);
         }
     }
 
-    fn retain_running(&mut self, mut alive: impl FnMut(u32, u64) -> bool) {
+    fn retain_running(&mut self, mut alive: impl FnMut(u32, u64, Option<u64>) -> bool) {
         self.totals
-            .retain(|(pid, started), _| alive(*pid, *started));
+            .retain(|(pid, started), total| alive(*pid, *started, total.created));
     }
 
     fn get(&self, pid: u32, started: u64) -> Option<ProcessTrafficTotal> {
         self.totals.get(&(pid, started)).copied()
+    }
+}
+
+fn traffic_identity(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::network::process_creation_time(pid)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+        None
     }
 }
 
@@ -234,13 +261,13 @@ fn run_collector(
             traffic.record_frame(frame, |pid| {
                 system
                     .process(sysinfo::Pid::from_u32(pid))
-                    .map(|p| p.start_time())
+                    .map(|p| (p.start_time(), traffic_identity(pid)))
             });
         }
-        traffic.retain_running(|pid, started| {
+        traffic.retain_running(|pid, started, created| {
             system
                 .process(sysinfo::Pid::from_u32(pid))
-                .is_some_and(|p| p.start_time() == started)
+                .is_some_and(|p| p.start_time() == started && traffic_identity(pid) == created)
         });
 
         let cores = system.cpus().len().max(1) as f32;
@@ -249,6 +276,15 @@ fn run_collector(
             let pid_number = pid.as_u32();
             let gpu_usage = gpu.get(&pid_number).copied().unwrap_or(GpuUsage::default());
             let network_rate = net.rates.get(&pid_number);
+            #[cfg(target_os = "windows")]
+            let network_rate = network_rate.filter(|_| {
+                net.process_lifetimes.get(&pid_number).copied()
+                    == crate::network::process_creation_time(pid_number)
+            });
+            #[cfg(target_os = "windows")]
+            let process_network_available = net.is_available && network_rate.is_some();
+            #[cfg(not(target_os = "windows"))]
+            let process_network_available = net.is_available;
             let total = traffic.get(pid_number, process.start_time());
             processes.push(ProcessRow {
                 pid: pid_number,
@@ -262,17 +298,13 @@ fn run_collector(
                 gpu_pct: gpu_usage.utilization_pct,
                 gpu_memory_bytes: gpu_usage.memory_bytes,
                 ram_bytes: process.memory(),
-                down_bps: net
-                    .is_available
+                down_bps: process_network_available
                     .then_some(network_rate.map_or(0.0, |entry| entry.download_bps)),
-                up_bps: net
-                    .is_available
+                up_bps: process_network_available
                     .then_some(network_rate.map_or(0.0, |entry| entry.upload_bps)),
-                downloaded_bytes: net
-                    .is_available
+                downloaded_bytes: process_network_available
                     .then_some(total.map_or(0, |entry| entry.downloaded_bytes)),
-                uploaded_bytes: net
-                    .is_available
+                uploaded_bytes: process_network_available
                     .then_some(total.map_or(0, |entry| entry.uploaded_bytes)),
             });
         }
@@ -413,6 +445,8 @@ mod tests {
             seconds_per_sample: 2.0,
             captured_at: 1000,
             rates: HashMap::new(),
+            process_lifetimes: HashMap::new(),
+            exact_bytes: HashMap::new(),
         };
         net.rates.insert(
             42,
@@ -425,15 +459,32 @@ mod tests {
     }
 
     #[test]
+    fn native_lifetime_prevents_same_second_pid_reuse_and_preserves_exact_bytes() {
+        let mut ledger = TrafficLedger::default();
+        let mut old = frame(1, 1, 0.0);
+        old.process_lifetimes.insert(42, 123_000_001);
+        old.exact_bytes.insert(42, (u64::MAX - 8, 17));
+        ledger.record_frame(&old, |_| Some((123, Some(123_000_002))));
+        assert!(ledger.get(42, 123).is_none());
+        ledger.record_frame(&frame(1, 2, 0.0), |_| Some((123, None)));
+        old.sequence = 3;
+        ledger.record_frame(&old, |_| Some((123, Some(123_000_001))));
+        assert_eq!(ledger.get(42, 123).unwrap().uploaded_bytes, u64::MAX - 8);
+        assert_eq!(ledger.get(42, 123).unwrap().downloaded_bytes, 17);
+        ledger.retain_running(|_, _, token| token == Some(123_000_002));
+        assert!(ledger.get(42, 123).is_none());
+    }
+
+    #[test]
     fn only_count_unique_frames_and_separate_reused_pids() {
         let mut ledger = TrafficLedger::default();
         let sample = frame(1, 1, 100.0);
-        ledger.record_frame(&sample, |_| Some(123));
-        ledger.record_frame(&sample, |_| Some(123));
+        ledger.record_frame(&sample, |_| Some((123, None)));
+        ledger.record_frame(&sample, |_| Some((123, None)));
         assert_eq!(ledger.get(42, 123).unwrap().uploaded_bytes, 200);
         assert_eq!(ledger.get(42, 123).unwrap().downloaded_bytes, 100);
-        ledger.retain_running(|_, start| start != 123);
-        ledger.record_frame(&frame(1, 2, 50.0), |_| Some(456));
+        ledger.retain_running(|_, start, _| start != 123);
+        ledger.record_frame(&frame(1, 2, 50.0), |_| Some((456, None)));
         assert!(ledger.get(42, 123).is_none());
         assert_eq!(ledger.get(42, 456).unwrap().uploaded_bytes, 100);
     }
@@ -441,15 +492,15 @@ mod tests {
     #[test]
     fn a_new_session_epoch_can_reuse_sequence_number() {
         let mut ledger = TrafficLedger::default();
-        ledger.record_frame(&frame(1, 1, 1.0), |_| Some(1));
-        ledger.record_frame(&frame(2, 1, 1.0), |_| Some(1));
+        ledger.record_frame(&frame(1, 1, 1.0), |_| Some((1, None)));
+        ledger.record_frame(&frame(2, 1, 1.0), |_| Some((1, None)));
         assert_eq!(ledger.get(42, 1).unwrap().uploaded_bytes, 4);
     }
 
     #[test]
     fn buffered_frame_does_not_charge_a_process_started_after_capture() {
         let mut ledger = TrafficLedger::default();
-        ledger.record_frame(&frame(1, 1, 50.0), |_| Some(1001));
+        ledger.record_frame(&frame(1, 1, 50.0), |_| Some((1001, None)));
         assert!(ledger.get(42, 1001).is_none());
     }
 }

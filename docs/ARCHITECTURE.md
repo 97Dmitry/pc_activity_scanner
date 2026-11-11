@@ -7,15 +7,17 @@ never controls other processes or sends their metadata to a service.
 
 | Module | Responsibility |
 |---|---|
-| `main` | Native window setup and Linux helper entry point |
+| `main` | Native window setup and platform capture-helper entry points |
 | `app` | User commands, settings, tray actions and screen state |
 | `ui` | Navigation, overview/history/comparison, interactive plots and virtualized process table |
 | `history` | Duration-weighted buckets, SQLite store, schema/retention and bounded worker/service |
 | `history_export` | Explicit asynchronous CSV export of a selected historical result |
 | `model` | Metric types, search, grouping, sorting and cached visible rows |
 | `collector` | Background sysinfo sampling and process-lifetime traffic ledger |
-| `network` | NetHogs parser, bounded frame delivery and helper lifetime |
+| `network` | NetHogs/Windows ETW sources, bounded frame delivery and helper lifetime |
 | `gpu`, `nvidia` | Driver-dependent DRM/NVIDIA sampling |
+| `autostart` | Asynchronous Windows Task Scheduler query/configuration with original-user and protected-path checks |
+| `icon` | Embedded window/tray artwork; Windows EXE resource via build script |
 | `settings` | Validated JSON configuration and safe file replacement |
 | `export` | Explicit CSV export with quoting and formula protection |
 | `tray` | Native tray lifecycle and menu events |
@@ -71,8 +73,16 @@ not change a newer session's status or rates.
 
 Only the installed, root-owned Linux helper may be elevated. Every ancestor of
 its executable must be root-owned and protected against group/other writes.
-The GUI stays unprivileged. Windows currently provides CPU, RAM and aggregate
-network counters; unsupported per-process metrics remain `None` / `—`.
+The GUI stays unprivileged by default. Windows opt-in ETW network capture runs
+in a separate UAC helper with a unique session and authenticated bounded local
+IPC. Epoch checks prevent stopped sessions overwriting new state. Lost events
+or helper failure make network data unavailable. GPU remains unsupported.
+
+Windows startup is managed by an asynchronous per-user Task Scheduler adapter.
+It queries actual OS state rather than treating JSON as authoritative. Original
+user SID is preserved across UAC. Full-GUI elevated startup is optional and
+requires a protected executable path; writable portable locations are rejected.
+Task configuration never runs on the GUI thread. See `docs/DOWNLOADS.md`.
 
 ## Verification boundaries
 

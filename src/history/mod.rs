@@ -334,12 +334,13 @@ impl Worker {
                 match self.store.query(&query) {
                     Ok(data) => update(&self.view, |v| {
                         v.request_id = query.request_id;
+                        v.query_error = None;
                         v.data = data;
                     }),
                     Err(error) => update(&self.view, |v| {
                         v.request_id = query.request_id;
                         v.data = HistoryData::default();
-                        v.status.error = Some(error);
+                        v.query_error = Some(error);
                     }),
                 }
             }
@@ -478,6 +479,24 @@ mod tests {
         }));
         wait(service, id)
     }
+    #[test]
+    fn successful_empty_query_is_distinct_from_recording_warnings_and_old_query_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let service =
+            HistoryService::start_at(dir.path().join("history"), HistoryConfig::default());
+        let now = chrono::Utc::now().timestamp();
+        request(&service, 1, now);
+        update(&service.view, |view| {
+            view.status.error = Some("recording warning".into());
+            view.query_error = Some("old query error".into());
+        });
+        let view = request(&service, 2, now);
+        assert_eq!(view.request_id, 2);
+        assert!(view.data.systems.is_empty());
+        assert!(view.query_error.is_none());
+        assert_eq!(view.status.error.as_deref(), Some("recording warning"));
+    }
+
     #[test]
     fn service_queries_restarts_disabled_recording_and_confirmed_clear() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,6 +1,6 @@
 # PC Activity Scanner — product specification (SDD)
 
-Status: versioned desktop release. Version: 0.3.0. Supported signals are listed below.
+Status: versioned desktop release. Version: 0.4.0. Supported signals are listed below.
 
 ## Objective
 
@@ -13,8 +13,8 @@ A local desktop utility, written in Rust, that attributes resource consumption t
 | Total CPU/RAM | `sysinfo` | `sysinfo` |
 | Per-process CPU/RAM | `sysinfo` | `sysinfo` |
 | Total network RX/TX rate | `sysinfo::Networks` | `sysinfo::Networks` |
-| Per-process RX/TX rate | NetHogs trace; opt-in, `pkexec`/root | **Unavailable**; show `—` |
-| Per-process bytes since started | Integrate each NetHogs frame once (estimate) | **Unavailable**; show `—` |
+| Per-process RX/TX rate | NetHogs trace; opt-in, `pkexec`/root | Opt-in ETW TCP/UDP helper, UAC |
+| Per-process bytes since started | Integrate each NetHogs frame once (estimate) | Observed ETW TCP/UDP byte deltas, process lifetime checked |
 | Per-process GPU use | DRM fdinfo, NVIDIA pmon fallback (driver dependent) | **Unavailable**; show `—` |
 | GPU dedicated VRAM | DRM fdinfo, NVIDIA pmon if exposed | **Unavailable**; show `—` |
 
@@ -42,7 +42,7 @@ Linux CPU percentages are normalized across logical cores (100% = all logical CP
 - No telemetry or automatic internet communication from app code.
 - System-wide totals include traffic from all active non-loopback network interfaces and may contain VPN / virtual interfaces (double counting possible).
 - App requires a desktop session (Windows or Linux X11/Wayland with a tray implementation); WSL/headless support is not in scope.
-- UI and tray must not require administrator privileges; only NetHogs is elevated on Linux.
+- UI and tray do not require administrator privileges; network helpers are elevated separately. Optional Windows administrator login startup is explicit and requires a protected executable location.
 
 ## Test-first plan (TDD)
 
@@ -56,7 +56,6 @@ Linux CPU percentages are normalized across logical cores (100% = all logical CP
 
 ## Known limits / planned future work
 
-- Native Windows per-PID network via ETW (requires privileged provider/session setup).
 - Native Windows per-process GPU via PDH GPU Engine counters.
 - Longer-term rollups beyond the current bounded 1/3/7-day history and native runtime coverage.
 - Signed releases and end-to-end tray tests in real desktop sessions.
