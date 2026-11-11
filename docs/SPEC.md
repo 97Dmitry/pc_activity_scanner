@@ -18,7 +18,7 @@ A local desktop utility, written in Rust, that attributes resource consumption t
 | Per-process GPU use | DRM fdinfo, NVIDIA pmon fallback (driver dependent) | **Unavailable**; show `—` |
 | GPU dedicated VRAM | DRM fdinfo, NVIDIA pmon if exposed | **Unavailable**; show `—` |
 
-Linux CPU percentages are normalized across logical cores (100% = all logical CPU capacity). Network rate units are bytes/s, total bytes are accumulated **in the present app session**, not lifetime totals. The network backend may not attribute traffic to some processes. Unknown metrics must be represented as unknown, never as zero. GPU percentage reflects available vendor signals and is not directly comparable across drivers.
+Linux CPU percentages are normalized across logical cores (100% = all logical CPU capacity). Network rate units are bytes/s, total bytes are accumulated **in the present app session**, not lifetime totals. The network backend may not attribute traffic to some processes. Unknown metrics must be represented as unknown, never as zero. Per-process network rates expire after seven seconds without a new NetHogs frame. GPU percentage reflects available vendor signals and is not directly comparable across drivers.
 
 ## User scenarios and acceptance criteria
 

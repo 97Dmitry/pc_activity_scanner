@@ -135,7 +135,8 @@ fn run_collector(
         system.refresh_memory();
         system.refresh_processes(ProcessesToUpdate::All, true);
         networks.refresh(true);
-        let net = net_state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut net = net_state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        net.expire_if_stale(Duration::from_secs(7));
         #[cfg(target_os = "linux")]
         let pids = system
             .processes()

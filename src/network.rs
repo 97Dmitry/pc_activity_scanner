@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NetworkRate {
@@ -14,6 +15,7 @@ pub struct NetworkSample {
     pub is_available: bool,
     pub status: String,
     pub rates: HashMap<u32, NetworkRate>,
+    pub last_frame_at: Option<Instant>,
     /// The requested NetHogs sampling period, used for session traffic estimates.
     pub seconds_per_sample: f64,
 }
@@ -26,7 +28,23 @@ impl Default for NetworkSample {
             is_available: false,
             status: "Учёт трафика по процессам отключён".to_string(),
             rates: HashMap::new(),
+            last_frame_at: None,
             seconds_per_sample: 2.0,
+        }
+    }
+}
+
+impl NetworkSample {
+    /// Suppress stale per-process rates if the backend stopped publishing.
+    pub fn expire_if_stale(&mut self, max_age: Duration) {
+        if self.is_available
+            && self
+                .last_frame_at
+                .is_none_or(|last| last.elapsed() > max_age)
+        {
+            self.is_available = false;
+            self.rates.clear();
+            self.status = "NetHogs: нет новых данных, последняя скорость устарела".into();
         }
     }
 }
@@ -320,6 +338,7 @@ impl LinuxSession {
                         snapshot.sequence = snapshot.sequence.wrapping_add(1);
                         snapshot.rates = std::mem::take(&mut frame);
                         snapshot.is_available = true;
+                        snapshot.last_frame_at = Some(Instant::now());
                         snapshot.status = "NetHogs · получаем данные по PID".into();
                     }
                     saw_first_frame = true;
@@ -373,6 +392,28 @@ impl LinuxSession {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stale_network_frames_are_not_shown_as_live() {
+        use super::{NetworkRate, NetworkSample};
+        use std::time::{Duration, Instant};
+
+        let mut sample = NetworkSample {
+            is_available: true,
+            last_frame_at: Some(Instant::now() - Duration::from_secs(20)),
+            ..NetworkSample::default()
+        };
+        sample.rates.insert(
+            42,
+            NetworkRate {
+                upload_bps: 100.0,
+                download_bps: 200.0,
+            },
+        );
+        sample.expire_if_stale(Duration::from_secs(6));
+        assert!(!sample.is_available);
+        assert!(sample.rates.is_empty());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn parses_nethogs_trace_with_path() {
