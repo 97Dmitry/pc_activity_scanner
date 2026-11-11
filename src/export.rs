@@ -36,7 +36,7 @@ pub fn export_csv(rows: &[ProcessRow]) -> Result<PathBuf, String> {
 /// Excel interprets text beginning with =, +, -, @ and control whitespace as formulas.
 /// Prefix potentially executable contents with an apostrophe (text literal marker).
 fn excel_safe(value: &str) -> String {
-    let trimmed = value.trim_start_matches(|ch: char| matches!(ch, ' ' | '\t' | '\r' | '\n'));
+    let trimmed = value.trim_start_matches([' ', '\t', '\r', '\n']);
     if trimmed.chars().next().is_some_and(|ch| matches!(ch, '=' | '+' | '-' | '@'))
         || value.chars().next().is_some_and(|ch| matches!(ch, '\t' | '\r' | '\n'))
     {
