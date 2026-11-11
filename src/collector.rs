@@ -129,6 +129,7 @@ fn run_collector(
         system.refresh_processes(ProcessesToUpdate::All, true);
         networks.refresh(true);
         let net = net_state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        #[cfg(target_os = "linux")]
         let pids = system.processes().keys().map(|pid| pid.as_u32()).collect::<Vec<_>>();
 
         #[cfg(target_os = "linux")]

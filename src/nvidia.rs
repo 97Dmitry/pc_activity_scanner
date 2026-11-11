@@ -1,8 +1,12 @@
 use crate::gpu::{GpuUsage, parse_nvidia_pmon};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 #[derive(Clone, Default)]
 pub struct NvidiaState {
