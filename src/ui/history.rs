@@ -436,7 +436,7 @@ impl HistoryUi {
         egui::ScrollArea::horizontal()
             .id_salt("history-ranking-x")
             .show(ui, |ui| {
-                ui.set_min_width(900.0);
+                ui.set_min_width(1000.0);
                 use egui_extras::{Column, TableBuilder};
                 TableBuilder::new(ui)
                     .id_salt("history-ranking-table")
@@ -444,12 +444,12 @@ impl HistoryUi {
                     .resizable(true)
                     .max_scroll_height(if comparing { 180.0 } else { 250.0 })
                     .column(Column::initial(210.0).at_least(170.0))
-                    .column(Column::initial(115.0))
-                    .column(Column::initial(80.0))
+                    .column(Column::initial(135.0))
+                    .column(Column::initial(95.0))
                     .column(Column::initial(160.0))
-                    .column(Column::initial(130.0))
+                    .column(Column::initial(155.0))
                     .column(Column::initial(140.0))
-                    .header(32.0, |mut header| {
+                    .header(36.0, |mut header| {
                         for text in [
                             "Приложение / путь",
                             "CPU сред. / пик",
@@ -464,7 +464,7 @@ impl HistoryUi {
                         }
                     })
                     .body(|body| {
-                        body.rows(34.0, apps.len(), |mut row| {
+                        body.rows(36.0, apps.len(), |mut row| {
                             let app = apps[row.index()];
                             row.col(|ui| {
                                 let selected = if comparing {
@@ -811,12 +811,12 @@ fn plot(
         }
     });
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width().max(160.0), height + 29.0),
+        egui::vec2(ui.available_width().max(160.0), height + 33.0),
         egui::Sense::hover(),
     );
     let area = egui::Rect::from_min_max(
-        rect.min + egui::vec2(70.0, 5.0),
-        rect.max - egui::vec2(12.0, 24.0),
+        rect.min + egui::vec2(82.0, 7.0),
+        rect.max - egui::vec2(12.0, 26.0),
     );
     let painter = ui.painter_at(rect);
     let graph_painter = painter.with_clip_rect(area);
@@ -845,7 +845,7 @@ fn plot(
             egui::pos2(area.left() - 8.0, y),
             egui::Align2::RIGHT_CENTER,
             metric.format(fraction as f64 * max),
-            egui::FontId::proportional(10.0),
+            egui::FontId::proportional(12.0),
             MUTED,
         );
     }
@@ -861,7 +861,7 @@ fn plot(
                 egui::Align2::CENTER_TOP
             },
             time(query.from + (span * fraction as f64) as i64, "%H:%M"),
-            egui::FontId::proportional(10.0),
+            egui::FontId::proportional(12.0),
             MUTED,
         );
     }
@@ -874,7 +874,7 @@ fn plot(
             } else {
                 graph_painter.add(egui::Shape::line(
                     segment.into_iter().map(|(t, v)| position(t, v)).collect(),
-                    egui::Stroke::new(1.6, line.color),
+                    egui::Stroke::new(2.0, line.color),
                 ));
             }
         }
@@ -884,7 +884,7 @@ fn plot(
             area.center(),
             egui::Align2::CENTER_CENTER,
             "Нет доступных измерений",
-            egui::FontId::proportional(12.0),
+            egui::FontId::proportional(14.0),
             MUTED,
         );
     }

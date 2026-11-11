@@ -43,7 +43,7 @@ pub fn process_table(
                 });
             }
             builder
-                .header(32.0, |mut header| {
+                .header(36.0, |mut header| {
                     for &(column, label) in &columns {
                         header.col(|ui| {
                             let active = sort.column == column;
@@ -73,7 +73,7 @@ pub fn process_table(
                     }
                 })
                 .body(|body| {
-                    body.rows(30.0, rows.len(), |mut table_row| {
+                    body.rows(32.0, rows.len(), |mut table_row| {
                         let row = &rows[table_row.index()];
                         let selected = *selected_pid == Some(row.pid) && row.pid != 0;
                         table_row.set_selected(selected);

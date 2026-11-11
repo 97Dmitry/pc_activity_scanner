@@ -7,13 +7,22 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(92, 200, 238);
-pub const MUTED: egui::Color32 = egui::Color32::from_rgb(164, 178, 197);
+pub const MUTED: egui::Color32 = egui::Color32::from_rgb(190, 203, 220);
 pub const RAM: egui::Color32 = egui::Color32::from_rgb(236, 181, 97);
 
 pub fn configure(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = egui::Color32::from_rgb(24, 32, 43);
     visuals.extreme_bg_color = egui::Color32::from_rgb(17, 24, 34);
+    // Keep labels readable in every widget state, including secondary text.
+    let text = egui::Color32::from_rgb(235, 241, 249);
+    visuals.weak_text_color = Some(MUTED);
+    visuals.widgets.noninteractive.fg_stroke.color = text;
+    visuals.widgets.inactive.fg_stroke.color = text;
+    visuals.widgets.hovered.fg_stroke.color = egui::Color32::WHITE;
+    visuals.widgets.active.fg_stroke.color = egui::Color32::WHITE;
+    visuals.widgets.open.fg_stroke.color = egui::Color32::WHITE;
+    visuals.faint_bg_color = egui::Color32::from_rgb(31, 42, 56);
     visuals.selection.bg_fill = egui::Color32::from_rgb(35, 77, 101);
     visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT);
     ctx.set_visuals(visuals);
@@ -24,15 +33,23 @@ pub fn configure(ctx: &egui::Context) {
             .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
         style
             .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
         style
             .text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(15.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Small, egui::FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(14.0));
         style.visuals.widgets.noninteractive.bg_stroke =
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(43, 57, 75));
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(72, 91, 114));
         style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(36, 48, 64);
         style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(46, 66, 88);
         style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(42, 80, 105);
+        style.visuals.widgets.inactive.bg_stroke =
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(83, 104, 130));
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
     });
 }
