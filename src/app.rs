@@ -45,12 +45,14 @@ pub struct ActivityApp {
 impl ActivityApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        let settings = Settings::load();
+        let mut settings = Settings::load();
         let mut network = NetworkBackend::default();
         let mut feedback = String::new();
         if settings.enable_linux_traffic
             && let Err(err) = network.enable()
         {
+            settings.enable_linux_traffic = false;
+            let _ = settings.save();
             feedback = format!("Не удалось включить сетевой мониторинг: {err}");
         }
         let collector = Collector::start(settings.poll_interval_ms, network.shared());

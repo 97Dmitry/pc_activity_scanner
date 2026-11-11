@@ -2,7 +2,7 @@
 
 Local desktop process and resource monitor in **Rust**. CPU, GPU, RAM, network throughput per process where supported; searchable/sortable table, grouping, filters, session totals, pause, CSV export, history chart and optional minimize-to-tray.
 
-[Specification / acceptance criteria](docs/SPEC.md) · [Release artifacts](https://github.com/97Dmitry/pc_activity_scanner/releases)
+[Specification / acceptance criteria](docs/SPEC.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Release artifacts](https://github.com/97Dmitry/pc_activity_scanner/releases)
 
 ## Quick start
 
