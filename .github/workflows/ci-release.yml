@@ -1,0 +1,82 @@
+name: CI and per-commit release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-build:
+    name: ${{ matrix.os }} checks & build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: linux-x86_64
+            binary: target/release/pc_activity_scanner
+          - os: windows-2025
+            artifact: windows-x86_64
+            binary: target/release/pc_activity_scanner.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Ubuntu desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev libssl-dev pkg-config
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Lint all targets
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Run unit tests
+        run: cargo test --all-targets --locked
+      - name: Release build
+        run: cargo build --release --locked
+      - name: Stage executable
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp '${{ matrix.binary }}' 'dist/pc_activity_scanner-${{ matrix.artifact }}${{ runner.os == 'Windows' && '.exe' || '' }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Snapshot release for every main push
+    needs: [verify-and-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-x86_64'
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: snapshot-${{ github.sha }}
+          target_commitish: ${{ github.sha }}
+          name: 'Snapshot ${{ github.sha }}'
+          prerelease: true
+          make_latest: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*
