@@ -1,6 +1,6 @@
 # PC Activity Scanner — product specification (SDD)
 
-Status: initial desktop release candidate. Version: 0.1.0.
+Status: versioned desktop release. Version: 0.2.0. Supported signals are listed below.
 
 ## Objective
 
@@ -29,7 +29,7 @@ Linux CPU percentages are normalized across logical cores (100% = all logical CP
 5. **Configuration.** Settings persist in the user's OS configuration directory as JSON. Replacement uses a unique temporary file in the same directory and preserves the previous file until replacement succeeds. Invalid polling intervals normalize to a safe default. GUI supports 1, 2, 5 seconds.
 6. **Predictable resource accounting.** Consume every queued NetHogs frame once, even when process polling is slower than its two-second capture period. Bound the pending queue at 256 frames; discard oldest frames on overflow and report the gap in metric status. Key totals by `(pid, start_time)` and reject frames acquired before the current process started. NetHogs does not expose process lifetime identity; same-second PID reuse remains ambiguous. History has at most 120 samples. Pause halts CPU/process collection; NetHogs/NVIDIA continue independently. On resume, global network speed uses the actual interval including the pause. Stopping NetHogs must not wait for helper exit on the GUI thread; callbacks from an old session cannot overwrite a newer session.
 7. **No silent platform claims.** When the OS or driver does not provide a signal, show `—` plus a status explanation. Never derive per-PID network traffic from system-wide network traffic.
-8. **Delivery.** GitHub Actions on each push to `main` runs formatting, lint, unit tests and builds on Windows and Linux with Rust 1.95.0. Linux also checks window startup/resizing with Xvfb. Only after both builds succeed, attach both binaries to a unique pre-release for that push.
+8. **Delivery.** GitHub Actions on each push to `main` runs formatting, lint, unit tests and builds on Windows and Linux with Rust 1.95.0. Linux also checks window startup/resizing with Xvfb. Normal pushes do not publish releases. Version tags matching Cargo.toml/Cargo.lock and a commit on main publish a numbered Latest release only after both builds pass, with release notes, ready-to-run Windows/Linux archives, standalone binaries and SHA256 checksums.
 
 ## Quality and security boundaries
 
@@ -58,4 +58,4 @@ Linux CPU percentages are normalized across logical cores (100% = all logical CP
 - Signed releases and end-to-end tray tests in real desktop sessions.
 - Per-GPU normalization for multi-GPU machines and network interface selection.
 
-A passing CI pipeline is necessary, not sufficient, for production-readiness. Desktop runtime smoke tests (especially permission prompts and tray on KDE GNOME and Windows Explorer) are required before declaring a stable release.
+A passing CI pipeline is necessary, not sufficient, for production-readiness. Desktop runtime smoke tests (especially permission prompts and tray on KDE GNOME and Windows Explorer) are required before claiming production readiness; a versioned release must state the checks actually completed.

@@ -54,7 +54,10 @@ network counters; unsupported per-process metrics remain `None` / `—`.
 
 Unit tests cover parsing, filtering, caching, accounting, configuration and
 export contracts. CI runs formatting, Clippy, tests and release builds on Linux
-and Windows with the toolchain pinned in `rust-toolchain.toml`. A virtual X11
+and Windows with the toolchain pinned in `rust-toolchain.toml`. Version-tag
+releases package both validated binaries with documentation and SHA256 checksums;
+normal main pushes retain CI artifacts without publishing. See `RELEASING.md`.
+A virtual X11
 smoke test can establish startup and window resizing; it does not prove actual
 Windows, Wayland, system tray or Polkit behavior. Use `QA_CHECKLIST.md` for
 those checks before declaring a stable release.
