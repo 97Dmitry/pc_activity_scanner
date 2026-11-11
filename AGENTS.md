@@ -6,6 +6,10 @@
   owns sysinfo sampling and `(pid, start_time)` traffic accounting. `network`
   owns NetHogs parsing, frame delivery and helper lifetime. UI must not wait
   for subprocess shutdown or perform resource sampling.
+- `history` owns aggregation, all SQLite access/migrations and bounded worker
+  queues. Collector snapshots carry UTC time, contiguous duration and process
+  lifetime identity; never record history only from GUI repainting. See
+  `docs/HISTORY.md` and `docs/plans/ACTIVITY_HISTORY.md` for coverage semantics.
 - Unknown per-process metrics use `None` / `—`; never infer them from global
   counters. NetHogs frames must be accounted once, including frames between
   slower UI collection ticks. Bound queues and history buffers.

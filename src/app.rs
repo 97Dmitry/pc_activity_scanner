@@ -1,10 +1,12 @@
 //! Desktop presentation and user commands. Sampling stays on background threads.
 use crate::collector::Collector;
 use crate::export::export_csv;
+use crate::history::{HistoryService, types::HistoryConfig};
 use crate::model::{Filters, ProcessView, Snapshot, SortOrder};
 use crate::network::NetworkBackend;
 use crate::settings::Settings;
 use crate::tray::{Tray, TrayAction};
+use crate::ui::history::{HistoryMode, HistoryUi};
 use crate::ui::{self, ACCENT, MUTED};
 use eframe::{self, egui};
 use std::collections::VecDeque;
@@ -16,7 +18,10 @@ const MAX_HISTORY: usize = 120;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
+    Overview,
     Processes,
+    History,
+    Compare,
     Settings,
 }
 
@@ -27,6 +32,9 @@ pub struct ActivityApp {
     sort: SortOrder,
     screen: Screen,
     collector: Collector,
+    history_service: HistoryService,
+    history_ui: HistoryUi,
+    confirm_clear_history: bool,
     network: NetworkBackend,
     tray: Option<Tray>,
     tray_error: Option<String>,
@@ -53,7 +61,15 @@ impl ActivityApp {
             let _ = settings.save();
             feedback = format!("Не удалось включить сетевой мониторинг: {err}");
         }
-        let collector = Collector::start(settings.poll_interval_ms, network.shared());
+        let history_service = HistoryService::start(HistoryConfig {
+            enabled: settings.history_enabled,
+            retention_days: settings.history_retention_days,
+        });
+        let collector = Collector::start(
+            settings.poll_interval_ms,
+            network.shared(),
+            history_service.recorder(),
+        );
         let (tray, tray_error) = match Tray::new() {
             Ok(tray) => (Some(tray), None),
             Err(error) => (None, Some(error)),
@@ -74,8 +90,11 @@ impl ActivityApp {
             filters: Filters::default(),
             process_view: ProcessView::default(),
             sort: SortOrder::default(),
-            screen: Screen::Processes,
+            screen: Screen::Overview,
             collector,
+            history_service,
+            history_ui: HistoryUi::default(),
+            confirm_clear_history: false,
             network,
             tray,
             tray_error,
@@ -93,6 +112,13 @@ impl ActivityApp {
     fn save_settings(&mut self) {
         self.settings = self.settings.clone().validated();
         self.collector.set_interval(self.settings.poll_interval_ms);
+        if !self.history_service.configure(HistoryConfig {
+            enabled: self.settings.history_enabled,
+            retention_days: self.settings.history_retention_days,
+        }) {
+            self.feedback =
+                "Не удалось передать настройки записи истории; повторите изменение".into();
+        }
         if let Err(err) = self.settings.save() {
             self.feedback = format!("Не удалось сохранить настройки: {err}");
         }
@@ -164,6 +190,11 @@ impl ActivityApp {
     fn header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading(egui::RichText::new("PC Activity Scanner").size(20.0));
+            ui.label(
+                egui::RichText::new("Ресурсы и история")
+                    .small()
+                    .color(MUTED),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Выход").clicked() {
                     self.quit(ui.ctx());
@@ -190,7 +221,10 @@ impl ActivityApp {
             });
         });
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.screen, Screen::Processes, "Мониторинг");
+            ui.selectable_value(&mut self.screen, Screen::Overview, "Обзор");
+            ui.selectable_value(&mut self.screen, Screen::Processes, "Процессы");
+            ui.selectable_value(&mut self.screen, Screen::History, "История");
+            ui.selectable_value(&mut self.screen, Screen::Compare, "Сравнение");
             ui.selectable_value(&mut self.screen, Screen::Settings, "Настройки");
             ui.separator();
             ui.label(
@@ -224,6 +258,34 @@ impl ActivityApp {
                 ("Ожидание первого измерения…".to_owned(), MUTED)
             };
             ui.colored_label(color, status);
+            let history_status = &self.history_service.view().status;
+            ui.separator();
+            ui.colored_label(
+                if history_status.error.is_some() {
+                    crate::ui::RAM
+                } else if self.paused || !history_status.enabled {
+                    MUTED
+                } else {
+                    crate::ui::history::NETWORK
+                },
+                if history_status.error.is_some() {
+                    "Ошибка истории"
+                } else if !history_status.ready {
+                    "История запускается…"
+                } else if self.paused {
+                    "Запись на паузе"
+                } else if history_status.enabled {
+                    "История записывается"
+                } else {
+                    "Запись выключена"
+                },
+            );
+            if history_status.dropped_samples > 0 {
+                ui.colored_label(
+                    crate::ui::RAM,
+                    format!("Пропущено измерений: {}", history_status.dropped_samples),
+                );
+            }
             if self.tray.is_none() {
                 ui.separator();
                 ui.label(egui::RichText::new("Трей недоступен").color(MUTED))
@@ -336,6 +398,44 @@ impl ActivityApp {
         ui.add_space(12.0);
         ui.group(|ui| {
             ui.set_min_width(ui.available_width());
+            ui.heading("История ресурсов");
+            let mut changed = ui.checkbox(&mut self.settings.history_enabled, "Записывать историю, пока приложение работает").changed();
+            ui.horizontal(|ui| {
+                ui.label("Хранить:");
+                let old = self.settings.history_retention_days;
+                egui::ComboBox::from_id_salt("history-retention").selected_text(format!("{} дн.", old)).show_ui(ui, |ui| {
+                    for days in [1, 3, 7] { ui.selectable_value(&mut self.settings.history_retention_days, days, format!("{days} дн.")); }
+                });
+                changed |= old != self.settings.history_retention_days;
+            });
+            if changed { self.save_settings(); self.history_ui.invalidate(); }
+            ui.label("При выключенной записи сохранённая история остаётся доступной. Пауза и выключенный компьютер оставляют пробелы.");
+            let status = self.history_service.view();
+            ui.label(format!("Текущее хранение: {} дн.", status.status.retention_days));
+            if let Some(path) = &status.status.database_path {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("Хранилище: {} ({})", path.display(), crate::model::format_bytes(status.status.database_bytes)));
+                    if ui.small_button("Копировать путь").clicked() {ui.ctx().copy_text(path.display().to_string());}
+                });
+            }
+            if let Some(error) = &status.status.error { ui.colored_label(egui::Color32::LIGHT_RED, error); }
+            if self.confirm_clear_history {
+                ui.colored_label(crate::ui::RAM, "Удалить всю сохранённую историю? Отменить удаление нельзя.");
+                ui.horizontal(|ui| {
+                    if ui.button("Удалить историю").clicked() {
+                        if self.history_service.clear() {
+                            self.history_ui.cleared();
+                            self.feedback = "Запрошено удаление истории".into();
+                        } else { self.feedback = "Не удалось передать запрос удаления; повторите действие".into(); }
+                        self.confirm_clear_history = false;
+                    }
+                    if ui.button("Отмена").clicked() { self.confirm_clear_history = false; }
+                });
+            } else if ui.button("Очистить историю…").clicked() { self.confirm_clear_history = true; }
+        });
+        ui.add_space(12.0);
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
             ui.heading("Приватность и ограничения");
             ui.label("Сбор локальный: приложение не отправляет телеметрию на сервер.");
             ui.label("Учёт сетевого трафика каждого процесса — оценка за время работы приложения, не счётчик провайдера.");
@@ -436,7 +536,34 @@ impl eframe::App for ActivityApp {
         self.observe(&snap);
         egui::Panel::bottom("status-bar").show(ui, |ui| self.status_bar(ui, &snap));
         egui::Panel::top("navigation").show(ui, |ui| self.header(ui));
+        self.history_ui.poll_export();
+        if let Some(message) = self.history_ui.feedback.take() {
+            self.feedback = message;
+        }
         egui::CentralPanel::default().show(ui, |ui| match self.screen {
+            Screen::Overview => {
+                ui.label(
+                    egui::RichText::new(if self.paused {
+                        "Последнее измерение · пауза"
+                    } else {
+                        "Сейчас"
+                    })
+                    .strong()
+                    .color(MUTED),
+                );
+                ui::live_summary(ui, &snap);
+                ui.add_space(12.0);
+                self.history_ui
+                    .show(ui, &self.history_service, HistoryMode::Overview)
+            }
+            Screen::History => {
+                self.history_ui
+                    .show(ui, &self.history_service, HistoryMode::Applications)
+            }
+            Screen::Compare => {
+                self.history_ui
+                    .show(ui, &self.history_service, HistoryMode::Compare)
+            }
             Screen::Processes => self.process_screen(ui, &snap),
             Screen::Settings => {
                 egui::ScrollArea::vertical().show(ui, |ui| self.settings_screen(ui));

@@ -37,6 +37,19 @@ This project is not declared production-ready until the following pass on actual
 - [ ] Rapidly disable/re-enable NetHogs: UI stays responsive and old helper errors/EOF do not clear the new session.
 - [ ] Export twice rapidly: both CSVs exist. Verify UTF-8 Cyrillic, delimiter, sorting, CSV escaping and Excel formula safety.
 
+## Persistent history / analytics
+- [ ] A fresh profile shows live resources and an honest empty history; points appear as recording proceeds.
+- [ ] Record for over a minute, exit normally, restart and verify stored points/applications remain.
+- [ ] 1/6/12/24-hour ranges and Earlier/Later/Now select the displayed window; exited apps remain inspectable.
+- [ ] Ranking identifies executables with equal names/different paths, and distinguishes CPU contribution from observed-time CPU average.
+- [ ] Select an app, inspect CPU/RAM/GPU/network plots, compare up to four apps, change metrics and search.
+- [ ] Hover reports actual bucket times/values; CPU/GPU axis stays 0–100; offline, unknown and partial intervals are not bridged.
+- [ ] Pause/resume (including rapid toggles), hidden window and Settings do not misattribute or interrupt intended recording.
+- [ ] Disable recording, browse existing history, set 1/3/7-day retention, and confirm clear; cancel preserves data.
+- [ ] Export a historical result; query timestamps, coverage, unknown blanks, spreadsheet text protection and distinct filenames are correct.
+- [ ] Unwritable/invalid/locked database shows an error while live processes remain available; second history writer is handled safely.
+- [ ] Long synthetic 12-hour fixtures/reopen/query tests pass; a real overnight 12-hour session remains a separate acceptance check.
+
 ## Security / delivery
 - [ ] On Windows, only CPU/RAM and global networking have values: unsupported per-PID metrics show `—`.
 - [ ] No outbound telemetry or background updates; no logs containing packet payloads or private window content.

@@ -12,7 +12,7 @@ cleanup() {
     rm -rf "$config_dir"
 }
 trap cleanup EXIT
-XDG_CONFIG_HOME="$config_dir" "$binary" >"$config_dir/app.log" 2>&1 &
+XDG_CONFIG_HOME="$config_dir/config" XDG_DATA_HOME="$config_dir/data" "$binary" >"$config_dir/app.log" 2>&1 &
 app_pid=$!
 window=""
 for _ in {1..50}; do

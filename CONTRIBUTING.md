@@ -16,7 +16,7 @@ ownership and data contracts. We use **spec-driven development and test-driven d
 
 On Linux, install `xvfb`, `xauth` and `xdotool`, then run
 `LIBGL_ALWAYS_SOFTWARE=1 timeout 30s xvfb-run -a bash scripts/smoke-linux.sh`.
-The script uses a temporary configuration directory and verifies window startup
+The script uses temporary configuration and history-data directories and verifies window startup
 and resizing to 960×600. Set `SCANNER_SCREENSHOT=/absolute/path.png` to capture
 the window too (requires ImageMagick). This does not validate real tray/Polkit
 integration or Windows behavior.

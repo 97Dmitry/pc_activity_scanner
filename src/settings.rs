@@ -10,6 +10,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     pub poll_interval_ms: u64,
     pub enable_linux_traffic: bool,
+    pub history_enabled: bool,
+    pub history_retention_days: u32,
 }
 
 impl Default for Settings {
@@ -18,6 +20,8 @@ impl Default for Settings {
             close_to_tray: true,
             poll_interval_ms: 2000,
             enable_linux_traffic: false,
+            history_enabled: true,
+            history_retention_days: 1,
         }
     }
 }
@@ -39,6 +43,9 @@ impl Settings {
     pub fn validated(mut self) -> Self {
         if ![1000, 2000, 5000].contains(&self.poll_interval_ms) {
             self.poll_interval_ms = 2000;
+        }
+        if ![1, 3, 7].contains(&self.history_retention_days) {
+            self.history_retention_days = 1;
         }
         self
     }
@@ -67,6 +74,46 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_settings_enable_one_day_history_by_default() {
+        let old_json =
+            r#"{"close_to_tray":false,"poll_interval_ms":5000,"enable_linux_traffic":true}"#;
+        let config: Settings = serde_json::from_str(old_json).unwrap();
+        let saved = serde_json::to_value(config.validated()).unwrap();
+        assert_eq!(saved["history_enabled"], true);
+        assert_eq!(saved["history_retention_days"], 1);
+        assert_eq!(saved["poll_interval_ms"], 5000);
+    }
+
+    #[test]
+    fn history_preferences_round_trip_without_enabling_recording() {
+        let config: Settings =
+            serde_json::from_str(r#"{"history_enabled":false,"history_retention_days":7}"#)
+                .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        config.validated().save_to(&path).unwrap();
+        let loaded: Settings = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let saved = serde_json::to_value(loaded.validated()).unwrap();
+        assert_eq!(saved["history_enabled"], false);
+        assert_eq!(saved["history_retention_days"], 7);
+    }
+
+    #[test]
+    fn unsupported_history_retention_falls_back_to_one_day() {
+        for (requested, expected) in [(0, 1), (1, 1), (2, 1), (3, 3), (7, 7), (365, 1)] {
+            let config: Settings = serde_json::from_value(serde_json::json!({
+                "history_retention_days": requested,
+            }))
+            .unwrap();
+            let saved = serde_json::to_value(config.validated()).unwrap();
+            assert_eq!(
+                saved["history_retention_days"], expected,
+                "requested {requested}"
+            );
+        }
+    }
 
     #[test]
     fn invalid_interval_does_not_create_busy_loop() {

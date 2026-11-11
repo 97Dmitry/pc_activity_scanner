@@ -8,8 +8,49 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Networks, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+struct SampleTiming {
+    sampled_at: i64,
+    sample_seconds: f64,
+    network_seconds: f64,
+}
+
+struct SamplingClock {
+    last_network_sample: Instant,
+    last_history_sample: Option<(Instant, u64)>,
+}
+
+impl SamplingClock {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_network_sample: now,
+            last_history_sample: None,
+        }
+    }
+
+    fn capture(&mut self, now: Instant, wall: SystemTime, pause_state: u64) -> SampleTiming {
+        let elapsed = now.duration_since(self.last_network_sample).as_secs_f64();
+        self.last_network_sample = now;
+        let sample_seconds = self.last_history_sample.map_or(0.0, |(last, state)| {
+            if state == pause_state && pause_state & 1 == 0 {
+                now.duration_since(last).as_secs_f64()
+            } else {
+                0.0
+            }
+        });
+        self.last_history_sample = (pause_state & 1 == 0).then_some((now, pause_state));
+        SampleTiming {
+            sampled_at: wall
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+            sample_seconds,
+            network_seconds: elapsed.max(0.001),
+        }
+    }
+}
 
 #[derive(Default, Clone, Copy)]
 struct ProcessTrafficTotal {
@@ -59,41 +100,52 @@ pub struct Collector {
     pub snapshot: Arc<RwLock<Arc<Snapshot>>>,
     interval_ms: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
-    paused: Arc<AtomicBool>,
+    // Low bit is pause status; every transition advances the generation, including
+    // a pause/resume pair occurring entirely between collector ticks.
+    pause_state: Arc<AtomicU64>,
 }
 
 impl Collector {
-    pub fn start(interval: u64, traffic: Arc<Mutex<NetworkSample>>) -> Self {
+    pub fn start(
+        interval: u64,
+        traffic: Arc<Mutex<NetworkSample>>,
+        recorder: crate::history::HistoryRecorder,
+    ) -> Self {
         let snapshot = Arc::new(RwLock::new(Arc::new(Snapshot::default())));
         let interval_ms = Arc::new(AtomicU64::new(interval));
         let stop = Arc::new(AtomicBool::new(false));
-        let paused = Arc::new(AtomicBool::new(false));
+        let pause_state = Arc::new(AtomicU64::new(0));
         let nvidia_state = Arc::new(RwLock::new(NvidiaState::default()));
         start_nvidia_sampler(Arc::clone(&stop), Arc::clone(&nvidia_state));
         let shared_snapshot = Arc::clone(&snapshot);
         let shared_stop = Arc::clone(&stop);
-        let shared_paused = Arc::clone(&paused);
+        let shared_pause_state = Arc::clone(&pause_state);
         let shared_interval = Arc::clone(&interval_ms);
         thread::spawn(move || {
             run_collector(
                 shared_snapshot,
                 shared_interval,
                 shared_stop,
-                shared_paused,
+                shared_pause_state,
                 traffic,
                 nvidia_state,
+                recorder,
             )
         });
         Self {
             snapshot,
             interval_ms,
             stop,
-            paused,
+            pause_state,
         }
     }
 
     pub fn set_paused(&self, value: bool) {
-        self.paused.store(value, Ordering::Relaxed);
+        let _ = self
+            .pause_state
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                ((current & 1 != 0) != value).then(|| current.wrapping_add(1))
+            });
     }
 
     pub fn set_interval(&self, millis: u64) {
@@ -111,9 +163,10 @@ fn run_collector(
     output: Arc<RwLock<Arc<Snapshot>>>,
     interval: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
-    paused: Arc<AtomicBool>,
+    pause_state: Arc<AtomicU64>,
     net_state: Arc<Mutex<NetworkSample>>,
     nvidia_state: Arc<RwLock<NvidiaState>>,
+    recorder: crate::history::HistoryRecorder,
 ) {
     let mut system = System::new();
     // We display process CPU, memory and executable paths, not thread or disk I/O data.
@@ -126,22 +179,26 @@ fn run_collector(
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh);
     thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     let mut networks = Networks::new_with_refreshed_list();
-    let mut last_refresh = Instant::now();
+    let mut clock = SamplingClock::new(Instant::now());
     let mut traffic = TrafficLedger::default();
     #[cfg(target_os = "linux")]
     let mut drm = DrmSampler::new();
     while !stop.load(Ordering::Relaxed) {
-        if paused.load(Ordering::Relaxed) {
+        if pause_state.load(Ordering::Relaxed) & 1 != 0 {
             thread::sleep(Duration::from_millis(100));
             continue;
         }
         let tick = Instant::now();
-        let elapsed_seconds = last_refresh.elapsed().as_secs_f64().max(0.001);
-        last_refresh = Instant::now();
         system.refresh_cpu_usage();
         system.refresh_memory();
         system.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh);
         networks.refresh(true);
+        let captured_at = Instant::now();
+        let timing = clock.capture(
+            captured_at,
+            SystemTime::now(),
+            pause_state.load(Ordering::Relaxed),
+        );
         let (mut net, frames) = {
             let mut state = net_state.lock().unwrap_or_else(|e| e.into_inner());
             let frames = state.take_frames();
@@ -195,6 +252,7 @@ fn run_collector(
             let total = traffic.get(pid_number, process.start_time());
             processes.push(ProcessRow {
                 pid: pid_number,
+                started_at: process.start_time(),
                 count: 1,
                 name: process.name().to_string_lossy().to_string(),
                 executable: process
@@ -225,8 +283,8 @@ fn run_collector(
             if name == "lo" || name.to_lowercase().contains("loopback") {
                 continue;
             }
-            rx_bps += data.received() as f64 / elapsed_seconds;
-            tx_bps += data.transmitted() as f64 / elapsed_seconds;
+            rx_bps += data.received() as f64 / timing.network_seconds;
+            tx_bps += data.transmitted() as f64 / timing.network_seconds;
             interface_count += 1;
         }
         let gpu_status = if cfg!(target_os = "linux") {
@@ -241,6 +299,8 @@ fn run_collector(
             "GPU по PID для этой ОС ещё не реализован".to_string()
         };
         let next = Snapshot {
+            sampled_at: timing.sampled_at,
+            sample_seconds: timing.sample_seconds,
             process_rows: processes,
             cpu_pct: system.global_cpu_usage().clamp(0.0, 100.0),
             ram_total: system.total_memory(),
@@ -250,9 +310,11 @@ fn run_collector(
             interface_count,
             network_status: net.status(),
             gpu_status,
-            updated_at: Some(Instant::now()),
+            updated_at: Some(captured_at),
         };
-        *output.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(next);
+        let next = Arc::new(next);
+        *output.write().unwrap_or_else(|e| e.into_inner()) = Arc::clone(&next);
+        recorder.record(next);
         let remaining =
             Duration::from_millis(interval.load(Ordering::Relaxed)).saturating_sub(tick.elapsed());
         let mut left = remaining;
@@ -268,6 +330,81 @@ fn run_collector(
 mod tests {
     use super::*;
     use crate::network::NetworkRate;
+
+    #[test]
+    fn timestamps_use_capture_time_but_durations_use_monotonic_time() {
+        let start = Instant::now();
+        let wall = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let mut clock = SamplingClock::new(start);
+        let initial = clock.capture(start + Duration::from_millis(10), wall, 0);
+        assert_eq!(initial.sampled_at, 1_700_000_000);
+        assert_eq!(initial.sample_seconds, 0.0);
+        let next = clock.capture(
+            start + Duration::from_millis(1260),
+            wall - Duration::from_secs(60),
+            0,
+        );
+        assert_eq!(next.sampled_at, 1_699_999_940);
+        assert_eq!(next.sample_seconds, 1.25);
+        assert_eq!(next.network_seconds, 1.25);
+    }
+
+    #[test]
+    fn resume_skips_history_interval_but_keeps_network_elapsed_time() {
+        let start = Instant::now();
+        let mut clock = SamplingClock::new(start);
+        clock.capture(start, UNIX_EPOCH, 0);
+        let resumed = clock.capture(start + Duration::from_secs(30), UNIX_EPOCH, 2);
+        assert_eq!(resumed.sample_seconds, 0.0);
+        assert_eq!(resumed.network_seconds, 30.0);
+        let next = clock.capture(start + Duration::from_millis(31500), UNIX_EPOCH, 2);
+        assert_eq!(next.sample_seconds, 1.5);
+    }
+
+    #[test]
+    fn a_sample_captured_during_pause_breaks_history_continuity() {
+        let start = Instant::now();
+        let mut clock = SamplingClock::new(start);
+        clock.capture(start, UNIX_EPOCH, 0);
+        let paused = clock.capture(start + Duration::from_secs(2), UNIX_EPOCH, 1);
+        assert_eq!(paused.sample_seconds, 0.0);
+        let resumed = clock.capture(start + Duration::from_secs(4), UNIX_EPOCH, 2);
+        assert_eq!(resumed.sample_seconds, 0.0);
+    }
+
+    #[test]
+    fn pause_and_resume_between_ticks_still_skip_the_interrupted_interval() {
+        let collector = Collector {
+            snapshot: Arc::default(),
+            interval_ms: Arc::new(AtomicU64::new(2000)),
+            stop: Arc::new(AtomicBool::new(false)),
+            pause_state: Arc::new(AtomicU64::new(0)),
+        };
+        let start = Instant::now();
+        let mut clock = SamplingClock::new(start);
+        clock.capture(
+            start,
+            UNIX_EPOCH,
+            collector.pause_state.load(Ordering::Relaxed),
+        );
+        collector.set_paused(true);
+        collector.set_paused(false);
+        let resumed = clock.capture(
+            start + Duration::from_secs(2),
+            UNIX_EPOCH,
+            collector.pause_state.load(Ordering::Relaxed),
+        );
+        assert_eq!(resumed.sample_seconds, 0.0);
+        assert_eq!(resumed.network_seconds, 2.0);
+        // Repeating the same unpaused setting must not discard a valid interval.
+        collector.set_paused(false);
+        let next = clock.capture(
+            start + Duration::from_secs(4),
+            UNIX_EPOCH,
+            collector.pause_state.load(Ordering::Relaxed),
+        );
+        assert_eq!(next.sample_seconds, 2.0);
+    }
 
     fn frame(epoch: u64, sequence: u64, bytes_per_second: f64) -> NetworkFrame {
         let mut net = NetworkFrame {
