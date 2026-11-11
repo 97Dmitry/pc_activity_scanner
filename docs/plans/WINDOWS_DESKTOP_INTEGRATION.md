@@ -61,3 +61,14 @@ release notes must disclose this and give a concrete manual checklist.
 - Independent reviews found and fixed pipe token impersonation, moved-EXE startup
   repair and successful-empty-query/shared-warning confusion; scoped re-review
   accepted the fixes. No schema change to historical storage.
+
+## Release gate follow-up
+
+The v0.4.0 tag was not published: its native UDP/IPv6 smoke check observed a
+shortfall after a fixed four-second wait. Two PR runs and later main checks
+passed, which does not prove the cause of that failed run. ControlTrace FLUSH
+is not a callback/frame/IPC completion barrier. Version 0.4.1 replaces the fixed
+wait with cumulative completion up to 12 seconds and logs frame deltas/timing;
+all transmitted bytes remain required. No capture/accounting tolerance or
+production backend change is introduced. Portable late-frame regressions and
+scoped review pass; the next native run must verify actual completion.

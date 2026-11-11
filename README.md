@@ -22,8 +22,8 @@ CPU, память и общий сетевой трафик; на Linux — та
 
 | Система | Файл |
 |---|---|
-| Windows 11 x64 | `pc_activity_scanner-v0.4.0-windows-x86_64.exe` |
-| Linux x86_64 | `pc_activity_scanner-v0.4.0-linux-x86_64` |
+| Windows 11 x64 | `pc_activity_scanner-v0.4.1-windows-x86_64.exe` |
+| Linux x86_64 | `pc_activity_scanner-v0.4.1-linux-x86_64` |
 | Контрольные суммы | `SHA256SUMS.txt` |
 
 Rust для запуска не требуется. Windows-сборка запускается двойным кликом.
@@ -33,19 +33,19 @@ Ubuntu/Kubuntu:
 ```bash
 sudo apt update
 sudo apt install libx11-6 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxkbcommon0 libwayland-client0 libgl1 libegl1 libxcursor1 libxi6 libxrandr2 libxkbcommon-x11-0
-chmod +x pc_activity_scanner-v0.4.0-linux-x86_64
-./pc_activity_scanner-v0.4.0-linux-x86_64
+chmod +x pc_activity_scanner-v0.4.1-linux-x86_64
+./pc_activity_scanner-v0.4.1-linux-x86_64
 ```
 
 Также доступны комплекты с программой, README и лицензией:
-`pc-activity-scanner-v0.4.0-windows-x86_64.zip` и
-`pc-activity-scanner-v0.4.0-linux-x86_64.tar.gz`.
+`pc-activity-scanner-v0.4.1-windows-x86_64.zip` и
+`pc-activity-scanner-v0.4.1-linux-x86_64.tar.gz`.
 **Source code** внизу списка — исходники, а не готовые программы.
 
-Релизы выходят по версиям (`v0.4.0`, `v0.2.1`, …), после успешных проверок и
+Релизы выходят по версиям (`v0.4.1`, `v0.2.1`, …), после успешных проверок и
 сборок обеих ОС. Обычный push в `main` запускает CI без публикации snapshot.
 Бинарники не подписаны; известные ограничения и объём проверок указаны в
-[описании релиза](docs/releases/v0.4.0.md). Порядок публикации —
+[описании релиза](docs/releases/v0.4.1.md). Порядок публикации —
 [RELEASING.md](docs/RELEASING.md).
 
 ## Windows: сеть и автозапуск
@@ -135,7 +135,7 @@ root и быть защищены от записи другими пользо�
 
 ```bash
 sudo apt install nethogs policykit-1
-sudo install -D -o root -g root -m 0755 pc_activity_scanner-v0.4.0-linux-x86_64 /usr/local/bin/pc-activity-scanner
+sudo install -D -o root -g root -m 0755 pc_activity_scanner-v0.4.1-linux-x86_64 /usr/local/bin/pc-activity-scanner
 pc-activity-scanner
 ```
 
