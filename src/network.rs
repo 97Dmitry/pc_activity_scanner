@@ -365,6 +365,7 @@ mod tests {
     #[test]
     fn closing_capture_pipe_reaps_child() {
         use std::process::{Command, Stdio};
+        use std::sync::{Arc, Mutex};
         let child = Command::new("cat")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
