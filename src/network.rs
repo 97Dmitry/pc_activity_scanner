@@ -133,10 +133,58 @@ pub fn parse_nethogs_line(line: &str) -> Option<(u32, NetworkRate)> {
     ))
 }
 
+/// Run only NetHogs while elevated, and stop it when the UI closes stdin.
+#[cfg(target_os = "linux")]
+pub fn run_nethogs_helper() -> i32 {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let is_root = Command::new("id")
+        .arg("-u")
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0");
+    if !is_root {
+        eprintln!("The NetHogs helper requires root authorization.");
+        return 77;
+    }
+    let Some(binary) = ["/usr/sbin/nethogs", "/usr/bin/nethogs"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).is_file())
+    else {
+        eprintln!("NetHogs is not installed.");
+        return 127;
+    };
+    let mut child = match Command::new(binary)
+        .args(["-t", "-d", "2"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => {
+            eprintln!("Unable to start NetHogs: {err}");
+            return 1;
+        }
+    };
+    let mut stdin = std::io::stdin().lock();
+    let mut bytes = [0u8; 64];
+    loop {
+        match stdin.read(&mut bytes) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    0
+}
+
 #[cfg(target_os = "linux")]
 struct LinuxSession {
     process: Arc<Mutex<std::process::Child>>,
     reader: Option<std::thread::JoinHandle<()>>,
+    elevated: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -153,15 +201,24 @@ impl LinuxSession {
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
             .unwrap_or(false);
+        let elevated = !is_root;
         let mut command = if is_root {
-            Command::new(binary)
+            let mut direct = Command::new(binary);
+            direct.args(["-t", "-d", "2"]);
+            direct
         } else {
-            let mut command = Command::new("pkexec");
-            command.arg(binary);
-            command
+            let exe = std::env::current_exe()
+                .map_err(|err| format!("Не удалось найти исполняемый файл: {err}"))?;
+            let mut helper = Command::new("pkexec");
+            helper.arg(exe).arg("--nethogs-helper");
+            helper
         };
         let mut child = command
-            .args(["-t", "-d", "2"])
+            .stdin(if elevated {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -225,15 +282,33 @@ impl LinuxSession {
         Ok(Self {
             process: Arc::new(Mutex::new(child)),
             reader: Some(reader),
+            elevated,
         })
     }
 
     fn stop(&mut self) {
+        use std::time::Duration;
+
+        let mut finished = false;
         if let Ok(mut child) = self.process.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+            if self.elevated {
+                drop(child.stdin.take());
+                // No indefinite wait if Polkit authorization is still pending.
+                for _ in 0..30 {
+                    if child.try_wait().ok().flatten().is_some() {
+                        finished = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            } else {
+                let _ = child.kill();
+                finished = child.wait().is_ok();
+            }
         }
-        if let Some(reader) = self.reader.take() {
+        if finished
+            && let Some(reader) = self.reader.take()
+        {
             let _ = reader.join();
         }
     }

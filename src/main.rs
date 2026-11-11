@@ -14,6 +14,13 @@ use eframe::egui;
 use std::sync::Arc;
 
 fn main() -> eframe::Result {
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new("--nethogs-helper"))
+    {
+        std::process::exit(network::run_nethogs_helper());
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("PC Activity Scanner")
