@@ -4,6 +4,8 @@ mod app;
 mod collector;
 mod export;
 mod gpu;
+mod history;
+mod history_export;
 mod model;
 mod network;
 mod nvidia;

@@ -23,9 +23,9 @@ GitHub release marked Latest after Windows and Linux checks pass.
    ```bash
    git switch main
    git pull --ff-only
-   python scripts/release.py validate v0.2.0
-   git tag -a v0.2.0 -m "PC Activity Scanner 0.2.0"
-   git push origin v0.2.0
+   python scripts/release.py validate v0.3.0
+   git tag -a v0.3.0 -m "PC Activity Scanner 0.3.0"
+   git push origin v0.3.0
    ```
 
 ## What CI enforces

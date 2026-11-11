@@ -1,4 +1,5 @@
 //! Pure presentation helpers; no sampling, persistence or subprocess control.
+pub mod history;
 pub mod table;
 use crate::model::{Snapshot, format_bytes, format_rate};
 use eframe::egui;
@@ -18,11 +19,25 @@ pub fn configure(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
     ctx.global_style_mut(|style| {
         style.spacing.item_spacing = egui::vec2(10.0, 7.0);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+        style.visuals.widgets.noninteractive.bg_stroke =
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(43, 57, 75));
+        style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(36, 48, 64);
+        style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(46, 66, 88);
+        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(42, 80, 105);
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
     });
 }
 
-pub fn summary(ui: &mut egui::Ui, snap: &Snapshot, history: &VecDeque<(Instant, f32, f32)>) {
+pub fn live_summary(ui: &mut egui::Ui, snap: &Snapshot) {
     let total = snap.process_rows.len();
     let ready = snap.updated_at.is_some();
     ui.columns(4, |cols| {
@@ -31,26 +46,34 @@ pub fn summary(ui: &mut egui::Ui, snap: &Snapshot, history: &VecDeque<(Instant, 
             "CPU",
             &format_pct(ready.then_some(snap.cpu_pct)),
             &format!("{total} процессов"),
+            ACCENT,
         );
         summary_card(
             &mut cols[1],
             "Оперативная память",
             &format_optional_bytes(ready.then_some(snap.ram_used)),
             &format!("из {}", format_bytes(snap.ram_total)),
+            RAM,
         );
         summary_card(
             &mut cols[2],
             "Получение",
             &format_rate(ready.then_some(snap.down_bps)),
             &format!("{} сетевых интерфейсов", snap.interface_count),
+            history::NETWORK,
         );
         summary_card(
             &mut cols[3],
             "Отправка",
             &format_rate(ready.then_some(snap.up_bps)),
             "Общий трафик интерфейсов",
+            history::NETWORK,
         );
     });
+}
+
+pub fn summary(ui: &mut egui::Ui, snap: &Snapshot, history: &VecDeque<(Instant, f32, f32)>) {
+    live_summary(ui, snap);
     ui.add_space(6.0);
     egui::CollapsingHeader::new("История CPU и памяти")
         .default_open(true)
@@ -74,12 +97,12 @@ pub fn summary(ui: &mut egui::Ui, snap: &Snapshot, history: &VecDeque<(Instant, 
     ui.add_space(8.0);
 }
 
-fn summary_card(ui: &mut egui::Ui, label: &str, value: &str, note: &str) {
+fn summary_card(ui: &mut egui::Ui, label: &str, value: &str, note: &str, color: egui::Color32) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.set_min_height(68.0);
+        ui.set_min_height(52.0);
         ui.set_min_width(ui.available_width());
         ui.label(egui::RichText::new(label).color(MUTED).small());
-        ui.label(egui::RichText::new(value).strong().size(23.0).color(ACCENT));
+        ui.label(egui::RichText::new(value).strong().size(20.0).color(color));
         ui.label(egui::RichText::new(note).color(MUTED).small());
     });
 }

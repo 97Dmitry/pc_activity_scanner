@@ -5,6 +5,8 @@ use std::sync::Arc;
 #[derive(Clone, Debug, Default)]
 pub struct ProcessRow {
     pub pid: u32,
+    /// UTC Unix seconds identifying this process lifetime together with its PID.
+    pub started_at: u64,
     pub count: usize,
     pub name: String,
     pub executable: String,
@@ -21,6 +23,10 @@ pub struct ProcessRow {
 
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
+    /// UTC Unix seconds at the resource sample capture, independent of UI repainting.
+    pub sampled_at: i64,
+    /// Actual contiguous sampling interval; zero at startup and after a pause.
+    pub sample_seconds: f64,
     pub process_rows: Vec<ProcessRow>,
     pub cpu_pct: f32,
     pub ram_used: u64,

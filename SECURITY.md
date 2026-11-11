@@ -11,6 +11,7 @@ Please use **GitHub → Security → Report a vulnerability** (private security 
 - The helper executable and every ancestor directory must be root-owned and not writable by group/other. An executable from a writable development directory cannot be elevated.
 - The helper stops its NetHogs child if its parent UI closes the stdin pipe; the UI bounds shutdown waits.
 - Exported CSV filenames are unique and spreadsheet formulas are neutralized before writing.
+- Persistent history stores local process names/paths and resource aggregates in the per-user data directory, with bounded retention and explicit clear/disable controls. New Unix history files/directories are owner-private. The application checks database ownership/schema before migrations; GUI and collector do not run SQL.
 - GPU and network counters may be unavailable because of driver limitations or process permissions; absence is never reported as zero.
 
 ## Delivery verification and remaining work
