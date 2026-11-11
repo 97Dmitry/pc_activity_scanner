@@ -37,7 +37,11 @@ pub fn process_table(
                 .auto_shrink([false, false]);
             for (column, _) in &columns {
                 builder = builder.column(match column {
-                    SortColumn::Name => Column::remainder().at_least(210.0),
+                    // Recompute on window resize instead of retaining a wide-screen name column.
+                    SortColumn::Name => Column::remainder()
+                        .at_least(210.0)
+                        .resizable(false)
+                        .clip(true),
                     SortColumn::Pid => Column::initial(65.0).at_least(50.0),
                     _ => Column::initial(105.0).at_least(74.0),
                 });
@@ -86,7 +90,7 @@ pub fn process_table(
                                         row.name.clone()
                                     };
                                     let response = ui
-                                        .selectable_label(selected, &name)
+                                        .add(egui::Button::selectable(selected, &name).truncate())
                                         .on_hover_text(format!("{name}\n{}", row.executable));
                                     if response.clicked() {
                                         *selected_pid = (row.pid != 0).then_some(row.pid);

@@ -59,6 +59,15 @@ jobs:
         run: cargo test --all-targets --locked
       - name: Release build
         run: cargo build --release --locked
+      - name: Windows ETW TCP UDP runtime smoke test
+        if: runner.os == 'Windows'
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "$PWD/target/release/pc_activity_scanner.exe" -ArgumentList '--windows-network-smoke-test' -PassThru -Wait -NoNewWindow -RedirectStandardOutput 'target/windows-network-smoke.log' -RedirectStandardError 'target/windows-network-smoke-error.log'
+          Get-Content target/windows-network-smoke.log
+          Get-Content target/windows-network-smoke-error.log
+          if ($process.ExitCode -ne 0) { throw "Windows ETW smoke failed: $($process.ExitCode)" }
       - name: Linux desktop startup smoke test
         if: runner.os == 'Linux'
         env:

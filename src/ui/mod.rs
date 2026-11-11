@@ -169,25 +169,3 @@ fn format_pct(percent: Option<f32>) -> String {
 fn format_optional_bytes(bytes: Option<u64>) -> String {
     bytes.map_or_else(|| "—".into(), format_bytes)
 }
-
-pub fn window_icon() -> egui::IconData {
-    const SIDE: usize = 32;
-    let mut rgba = vec![0u8; SIDE * SIDE * 4];
-    for y in 0..SIDE {
-        for x in 0..SIDE {
-            let index = (y * SIDE + x) * 4;
-            let in_circle = ((x as isize - 15).pow(2) + (y as isize - 15).pow(2)) < 220;
-            if in_circle {
-                rgba[index..index + 4].copy_from_slice(&[21, 35, 53, 255]);
-                if (7..25).contains(&x) && y > 23 - ((x % 9) / 2) && y < 25 {
-                    rgba[index..index + 4].copy_from_slice(&[72, 198, 169, 255]);
-                }
-            }
-        }
-    }
-    egui::IconData {
-        rgba,
-        width: SIDE as u32,
-        height: SIDE as u32,
-    }
-}

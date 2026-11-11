@@ -22,8 +22,8 @@ CPU, память и общий сетевой трафик; на Linux — та
 
 | Система | Файл |
 |---|---|
-| Windows 11 x64 | `pc_activity_scanner-v0.3.1-windows-x86_64.exe` |
-| Linux x86_64 | `pc_activity_scanner-v0.3.1-linux-x86_64` |
+| Windows 11 x64 | `pc_activity_scanner-v0.4.0-windows-x86_64.exe` |
+| Linux x86_64 | `pc_activity_scanner-v0.4.0-linux-x86_64` |
 | Контрольные суммы | `SHA256SUMS.txt` |
 
 Rust для запуска не требуется. Windows-сборка запускается двойным кликом.
@@ -33,20 +33,32 @@ Ubuntu/Kubuntu:
 ```bash
 sudo apt update
 sudo apt install libx11-6 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxkbcommon0 libwayland-client0 libgl1 libegl1 libxcursor1 libxi6 libxrandr2 libxkbcommon-x11-0
-chmod +x pc_activity_scanner-v0.3.1-linux-x86_64
-./pc_activity_scanner-v0.3.1-linux-x86_64
+chmod +x pc_activity_scanner-v0.4.0-linux-x86_64
+./pc_activity_scanner-v0.4.0-linux-x86_64
 ```
 
 Также доступны комплекты с программой, README и лицензией:
-`pc-activity-scanner-v0.3.1-windows-x86_64.zip` и
-`pc-activity-scanner-v0.3.1-linux-x86_64.tar.gz`.
+`pc-activity-scanner-v0.4.0-windows-x86_64.zip` и
+`pc-activity-scanner-v0.4.0-linux-x86_64.tar.gz`.
 **Source code** внизу списка — исходники, а не готовые программы.
 
-Релизы выходят по версиям (`v0.3.1`, `v0.2.1`, …), после успешных проверок и
+Релизы выходят по версиям (`v0.4.0`, `v0.2.1`, …), после успешных проверок и
 сборок обеих ОС. Обычный push в `main` запускает CI без публикации snapshot.
 Бинарники не подписаны; известные ограничения и объём проверок указаны в
-[описании релиза](docs/releases/v0.3.1.md). Порядок публикации —
+[описании релиза](docs/releases/v0.4.0.md). Порядок публикации —
 [RELEASING.md](docs/RELEASING.md).
+
+## Windows: сеть и автозапуск
+
+В настройках включается отдельный ETW-сборщик с запросом UAC. Он добавляет
+скорости и объёмы TCP/UDP по приложениям в текущую таблицу и историю. Старые
+интервалы без сбора остаются неизвестными. Запускать всё окно от администратора
+для этой функции не требуется.
+
+Там же можно настроить запуск при входе в Windows через Планировщик заданий,
+проверить фактическое состояние и выбрать повышенный режим. Повышенный
+автозапуск требует защищённой установки в Program Files; обычный работает и
+для портативной копии. [Подробные инструкции](docs/DOWNLOADS.md).
 
 ## История и анализ
 
@@ -54,7 +66,7 @@ chmod +x pc_activity_scanner-v0.3.1-linux-x86_64
 - **История** показывает рейтинг приложений за выбранный период, средние и
   пиковые значения, время наблюдения и подробные графики приложения.
 - **Сравнение** накладывает графики до четырёх приложений на общую шкалу.
-- Периоды: 1/6/12/24 часа; можно перейти к предыдущему периоду и вернуться
+- Периоды: 5/15/30 минут и 1/6/12/24 часа; можно перейти к предыдущему периоду и вернуться
   к текущему. В графиках есть оси времени и значения при наведении.
 - История хранится между запусками в локальной SQLite-базе. По умолчанию —
   24 часа, в настройках — 1/3/7 дней, отключение записи и подтверждённая очистка.
@@ -123,7 +135,7 @@ root и быть защищены от записи другими пользо�
 
 ```bash
 sudo apt install nethogs policykit-1
-sudo install -D -o root -g root -m 0755 pc_activity_scanner-v0.3.1-linux-x86_64 /usr/local/bin/pc-activity-scanner
+sudo install -D -o root -g root -m 0755 pc_activity_scanner-v0.4.0-linux-x86_64 /usr/local/bin/pc-activity-scanner
 pc-activity-scanner
 ```
 
