@@ -167,13 +167,37 @@ pub fn run_nethogs_helper() -> i32 {
             return 1;
         }
     };
-    let mut stdin = std::io::stdin().lock();
-    let mut bytes = [0u8; 64];
-    loop {
-        match stdin.read(&mut bytes) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    let stopped = Arc::new(AtomicBool::new(false));
+    let stdin_closed = Arc::clone(&stopped);
+    // A separate thread ensures the helper also exits when NetHogs crashes,
+    // even if the unprivileged UI keeps stdin open.
+    let _stdin_watcher = std::thread::spawn(move || {
+        let mut stdin = std::io::stdin().lock();
+        let mut bytes = [0u8; 64];
+        loop {
+            match stdin.read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
         }
+        stdin_closed.store(true, Ordering::Relaxed);
+    });
+    while !stopped.load(Ordering::Relaxed) {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.code().unwrap_or(1),
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!("NetHogs state error: {err}");
+                let _ = child.kill();
+                let _ = child.wait();
+                return 1;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -335,6 +359,24 @@ mod tests {
         );
         assert!(super::parse_nethogs_line("app/5/1000 -3 1").is_none());
         assert!(super::parse_nethogs_line("app/5/1000 NaN 1").is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn closing_capture_pipe_reaps_child() {
+        use std::process::{Command, Stdio};
+        let child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut session = super::LinuxSession {
+            process: Arc::new(Mutex::new(child)),
+            reader: None,
+            elevated: true,
+        };
+        session.stop();
+        assert!(session.process.lock().unwrap().try_wait().unwrap().is_some());
     }
 
     #[cfg(target_os = "linux")]
