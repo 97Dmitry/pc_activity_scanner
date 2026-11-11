@@ -13,6 +13,7 @@ This project is not declared production-ready until the following pass on actual
 - [ ] RAM usage matches one known process within OS accounting differences (resident vs. working set).
 - [ ] Total network RX/TX rates move during a large download and approach zero when idle.
 - [ ] Linux NetHogs (if installed): enabling prompts for authentication; denial does not freeze the UI.
+- [ ] Linux capture from a user-writable build is denied; the root-owned installed binary is accepted.
 - [ ] Linux NetHogs disabled: elevated helper actually exits, no stale per-process measurements remain.
 - [ ] Linux NetHogs: force-close the GUI and verify the privileged helper terminates its NetHogs child after stdin EOF.
 - [ ] Linux NetHogs: terminate NetHogs unexpectedly and verify UI reports collector unavailable instead of silently keeping old values.

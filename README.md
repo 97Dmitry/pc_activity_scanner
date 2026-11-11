@@ -13,10 +13,12 @@ sudo apt update
 sudo apt install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev libssl-dev pkg-config
 # Optional per-process network metrics:
 sudo apt install -y nethogs policykit-1
-cargo run --release
+cargo run --release # CPU/RAM and unprivileged metrics
+bash scripts/install-linux.sh # root-owned installation required for NetHogs
+pc-activity-scanner
 ```
 
-Rust **1.95+** required. Enable per-process network measurements in **Settings → Network**. A PolicyKit authentication dialog is expected. Running the entire UI as root is **not** recommended. On KDE Plasma Wayland, the desktop environment must expose a system tray (StatusNotifierItem) for close-to-tray.
+Rust **1.95+** required. Detailed NetHogs tracking requires a **root-owned executable in `/usr/local/bin`**. Development builds in user-writable directories are deliberately rejected as privileged helpers to prevent binary replacement between authorization and execution. CPU/RAM/global networking/GPU work without installation. Enable per-process network measurements in **Settings → Network**. A PolicyKit authentication dialog is expected. Running the entire UI as root is **not** recommended. On KDE Plasma Wayland, the desktop environment must expose a system tray (StatusNotifierItem) for close-to-tray.
 
 ### Windows 11
 

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=PC Activity Scanner
+Name[ru]=Монитор ресурсов ПК
+Comment=Local CPU, GPU, RAM and network process monitor
+Exec=/usr/local/bin/pc-activity-scanner
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+StartupNotify=true

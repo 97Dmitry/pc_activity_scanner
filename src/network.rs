@@ -133,6 +133,31 @@ pub fn parse_nethogs_line(line: &str) -> Option<(u32, NetworkRate)> {
     ))
 }
 
+/// An elevated helper must be root-owned and have no writable ancestors.
+#[cfg(target_os = "linux")]
+fn trusted_helper_binary(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return false;
+    }
+    for parent in path.ancestors().skip(1) {
+        let Ok(metadata) = std::fs::metadata(parent) else {
+            return false;
+        };
+        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Run only NetHogs while elevated, and stop it when the UI closes stdin.
 #[cfg(target_os = "linux")]
 pub fn run_nethogs_helper() -> i32 {
@@ -146,6 +171,13 @@ pub fn run_nethogs_helper() -> i32 {
     if !is_root {
         eprintln!("The NetHogs helper requires root authorization.");
         return 77;
+    }
+    if !std::env::current_exe()
+        .ok()
+        .is_some_and(|path| trusted_helper_binary(&path))
+    {
+        eprintln!("Unsafe helper path: install a root-owned binary first.");
+        return 78;
     }
     let Some(binary) = ["/usr/sbin/nethogs", "/usr/bin/nethogs"]
         .into_iter()
@@ -233,6 +265,9 @@ impl LinuxSession {
         } else {
             let exe = std::env::current_exe()
                 .map_err(|err| format!("Не удалось найти исполняемый файл: {err}"))?;
+            if !trusted_helper_binary(&exe) {
+                return Err("Для NetHogs установите программу через scripts/install-linux.sh и запустите /usr/local/bin/pc-activity-scanner".into());
+            }
             let mut helper = Command::new("pkexec");
             helper.arg(exe).arg("--nethogs-helper");
             helper
@@ -359,6 +394,15 @@ mod tests {
         );
         assert!(super::parse_nethogs_line("app/5/1000 -3 1").is_none());
         assert!(super::parse_nethogs_line("app/5/1000 NaN 1").is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn writable_binary_path_is_rejected_for_privileged_capture() {
+        let path = std::env::temp_dir().join(format!("scanner-untrusted-{}", std::process::id()));
+        std::fs::write(&path, b"unsafe").unwrap();
+        assert!(!super::trusted_helper_binary(&path));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[cfg(target_os = "linux")]
