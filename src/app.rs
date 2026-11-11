@@ -46,10 +46,8 @@ impl ActivityApp {
         let settings = Settings::load();
         let mut network = NetworkBackend::default();
         let mut feedback = String::new();
-        if settings.enable_linux_traffic {
-            if let Err(err) = network.enable() {
-                feedback = format!("Не удалось включить сетевой мониторинг: {err}");
-            }
+        if settings.enable_linux_traffic && let Err(err) = network.enable() {
+            feedback = format!("Не удалось включить сетевой мониторинг: {err}");
         }
         let collector = Collector::start(settings.poll_interval_ms, network.shared());
         let (tray, tray_error) = match Tray::new() {
@@ -141,8 +139,7 @@ impl ActivityApp {
     }
 
     fn observe(&mut self, snap: &Snapshot) {
-        if let Some(updated) = snap.updated_at {
-            if self.last_snapshot != Some(updated) {
+        if let Some(updated) = snap.updated_at && self.last_snapshot != Some(updated) {
                 self.last_snapshot = Some(updated);
                 let mem_pct = if snap.ram_total == 0 {
                     0.0
@@ -153,7 +150,6 @@ impl ActivityApp {
                 if self.history.len() > MAX_HISTORY {
                     self.history.pop_front();
                 }
-            }
         }
     }
 
@@ -350,11 +346,11 @@ impl ActivityApp {
         });
         ui.add_space(6.0);
         self.table(ui, &rows);
-        if let Some(selected) = self.selected_pid {
-            if let Some(row) = snapshot.process_rows.iter().find(|r| r.pid == selected) {
+        if let Some(selected) = self.selected_pid
+            && let Some(row) = snapshot.process_rows.iter().find(|r| r.pid == selected)
+        {
                 ui.separator();
                 ui.label(format!("Выбран PID {} · {} · {}", row.pid, row.name, row.executable));
-            }
         }
     }
 }
