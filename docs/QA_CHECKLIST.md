@@ -14,6 +14,8 @@ This project is not declared production-ready until the following pass on actual
 - [ ] Total network RX/TX rates move during a large download and approach zero when idle.
 - [ ] Linux NetHogs (if installed): enabling prompts for authentication; denial does not freeze the UI.
 - [ ] Linux NetHogs disabled: elevated helper actually exits, no stale per-process measurements remain.
+- [ ] Linux NetHogs: force-close the GUI and verify the privileged helper terminates its NetHogs child after stdin EOF.
+- [ ] Linux NetHogs: terminate NetHogs unexpectedly and verify UI reports collector unavailable instead of silently keeping old values.
 - [ ] Linux NetHogs enabled: e.g. browser download has plausible per-PID rates; exported session totals do not jump every repaint.
 - [ ] GPU load on integrated/optional NVIDIA GPU visible when driver provides per-process data; otherwise `—` rather than a fake 0.
 - [ ] No leaked helper processes after quit; no noticeable growth in memory over a 4-hour idle session.
@@ -33,4 +35,4 @@ This project is not declared production-ready until the following pass on actual
 - [ ] On Windows, only CPU/RAM and global networking have values: unsupported per-PID metrics show `—`.
 - [ ] No outbound telemetry or background updates; no logs containing packet payloads or private window content.
 - [ ] All Actions jobs pass for each release SHA; binary artifacts download and launch.
-- [ ] Release uses a unique SHA tag and is marked pre-release; checksums and signing still planned.
+- [ ] Release uses a unique SHA tag and is marked pre-release; SHA256 checksums are included, but code signing remains planned.

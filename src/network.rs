@@ -377,8 +377,8 @@ mod tests {
             elevated: true,
         };
         session.stop();
-        let exited = session.process.lock().unwrap().try_wait().unwrap().is_some();
-        assert!(exited);
+        let mut process = session.process.lock().unwrap();
+        assert!(process.try_wait().unwrap().is_some());
     }
 
     #[cfg(target_os = "linux")]

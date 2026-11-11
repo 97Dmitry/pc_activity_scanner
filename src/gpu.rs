@@ -72,6 +72,7 @@ pub mod drm {
     pub struct DrmClient {
         pub identifier: Option<String>,
         pub gpu_busy_ns: u64,
+        pub has_engine: bool,
         pub memory_bytes: Option<u64>,
     }
 
@@ -114,6 +115,7 @@ pub mod drm {
         Some(DrmClient {
             identifier: client_id.map(|id| format!("{pdev}/{id}")),
             gpu_busy_ns: busy_ns,
+            has_engine: found_engine,
             memory_bytes: memory,
         })
     }
@@ -160,15 +162,19 @@ pub mod drm {
                         // Missing client id: ignore to avoid double counting duplicated FDs.
                         continue;
                     }
-                    sum_busy_ns = sum_busy_ns.saturating_add(client.gpu_busy_ns);
-                    have_busy = true;
+                    if client.has_engine {
+                        sum_busy_ns = sum_busy_ns.saturating_add(client.gpu_busy_ns);
+                        have_busy = true;
+                    }
                     if let Some(mem) = client.memory_bytes {
                         sum_memory_bytes = sum_memory_bytes.saturating_add(mem);
                         have_memory = true;
                     }
                 }
                 if have_busy || have_memory {
-                    next.insert(pid, sum_busy_ns);
+                    if have_busy {
+                        next.insert(pid, sum_busy_ns);
+                    }
                     let percent = if have_busy {
                         self.previous.get(&pid).and_then(|prev| {
                             sum_busy_ns.checked_sub(*prev).map(|delta| {
@@ -196,6 +202,13 @@ pub mod drm {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn vram_only_fdinfo_does_not_claim_gpu_utilization() {
+            let parsed = parse_fdinfo("drm-client-id: 10\ndrm-memory-vram: 100 KiB").unwrap();
+            assert!(!parsed.has_engine);
+            assert_eq!(parsed.memory_bytes, Some(102_400));
+        }
 
         #[test]
         fn reads_drm_client_fields() {
