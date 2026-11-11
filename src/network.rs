@@ -109,8 +109,8 @@ pub fn parse_nethogs_line(line: &str) -> Option<(u32, NetworkRate)> {
     if pid == 0 || suffixes.next().is_none() {
         return None;
     }
-    let upload_kib = columns[1].parse::<f64>().ok()?;
-    let download_kib = columns[2].parse::<f64>().ok()?;
+    let upload_kib = columns[columns.len() - 2].parse::<f64>().ok()?;
+    let download_kib = columns[columns.len() - 1].parse::<f64>().ok()?;
     if !upload_kib.is_finite() || !download_kib.is_finite()
         || upload_kib < 0.0 || download_kib < 0.0 {
         return None;
