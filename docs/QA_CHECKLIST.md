@@ -58,7 +58,11 @@ This project is not declared production-ready until the following pass on actual
 - [ ] Windows: disable capture and close GUI while UAC is pending; late confirmation must not leave an active capture session.
 - [ ] Windows: lost ETW events/helper failure show unavailable, and stale callbacks cannot overwrite a newer capture session.
 - [ ] Windows: configure/remove ordinary login startup, re-query state, sign out/in, verify interactive UI and one task per user.
-- [ ] Windows: elevated startup rejects Downloads/user-writable/reparse locations; protected Program Files copy can configure Highest. Cancel UAC and recover via Check state.
+- [ ] Windows: from Downloads, explicit elevated setup creates a protected managed copy and Highest task; no manual folder steps. Cancel UAC and recover without disabled controls.
+- [ ] Managed install pins source hash, rejects tampering/reparse/unrelated markers; repeat same version and retarget a new version while old managed EXE runs.
+- [ ] Fresh and migrated profiles offer visible full monitoring; Enable/Skip/Retry/explicit Disable persist coherently and never distribute global traffic across apps.
+- [ ] Settings show functional controls; raw CLIXML, paths, driver/backend details appear only in Diagnostics with Copy. Errors preserve actual startup state and usable recovery.
+- [ ] CPU contribution value is readable for 0%, partial and full bars at 960×600.
 - [ ] Windows: move portable EXE, re-query stale task, repair/downgrade/remove it; unrelated task collisions fail closed.
 - [ ] Windows: alternate UAC credentials do not change task principal; standard user cannot select automatic Highest.
 - [ ] Windows: inspect icon in Explorer/shortcut/taskbar/tray at 100/125/150/200% DPI, dark/light taskbar; no generic EXE icon.

@@ -1,5 +1,60 @@
 //! Per-user Windows logon task; settings are read from Task Scheduler.
 
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, PartialEq, Eq)]
+pub struct State {
+    pub enabled: bool,
+    pub elevated: bool,
+    pub needs_repair: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Error {
+    pub message: String,
+    pub details: String,
+    pub state: Option<State>,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<String> for Error {
+    fn from(details: String) -> Self {
+        let message = if details.contains("ExitCode=41") {
+            "Windows не разрешила подготовить защищённую копию программы. Текущий автозапуск сохранён."
+        } else if details.contains("ExitCode=42") {
+            "Настройка остановлена: каталог или задача автозапуска заняты другой конфигурацией. Подробности доступны в диагностике."
+        } else if details.contains("ExitCode=43") {
+            "Не удалось сохранить копию программы для автозапуска. Проверьте свободное место и повторите попытку."
+        } else if details.contains("ExitCode=44") {
+            "Windows не разрешила сохранить задачу автозапуска. Проверьте состояние и повторите попытку."
+        } else if details.contains("ExitCode=45") {
+            "Файл программы изменился во время настройки. Запустите актуальную версию и повторите попытку."
+        } else if details.contains("ExitCode=46") {
+            "Время подтверждения Windows истекло. Повторите настройку."
+        } else if details.contains("исходной учётной записи администратора")
+        {
+            "Для автозапуска с полным доступом войдите в учётную запись администратора Windows. Обычный автозапуск доступен без этого."
+        } else if details.contains("1223")
+            || details.contains("cancelled")
+            || details.contains("canceled")
+        {
+            "Настройка отменена. Текущий автозапуск сохранён."
+        } else if details.contains("expired") || details.contains("Истекло время") {
+            "Не удалось дождаться подтверждения Windows. Проверьте состояние и повторите настройку."
+        } else {
+            "Не удалось изменить автозапуск. Повторите попытку; подробности доступны в диагностике."
+        };
+        Self {
+            message: message.to_owned(),
+            details,
+            state: None,
+        }
+    }
+}
+
 fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -31,7 +86,7 @@ fn encoded_command(script: &str) -> String {
 // Conservative ACL policy: only SYSTEM, Administrators and TrustedInstaller may
 // replace the executable or any existing ancestor. No permissions are modified.
 const PROTECTED_PATH: &str = r#"
-function Assert-ProtectedExecutable([string]$path) {
+function Assert-ProtectedExecutable([string]$path, [switch]$Directory) {
     $root = [System.IO.Path]::GetPathRoot($path)
     if ($root -ine [System.IO.Path]::GetPathRoot([Environment]::SystemDirectory)) {
         throw 'Elevated startup requires a protected local installation on the Windows system drive.'
@@ -39,11 +94,12 @@ function Assert-ProtectedExecutable([string]$path) {
     $trustedInstaller = ([System.Security.Principal.NTAccount]::new('NT SERVICE\TrustedInstaller')).Translate([System.Security.Principal.SecurityIdentifier]).Value
     $trusted = @('S-1-5-18', 'S-1-5-32-544', $trustedInstaller)
     $item = Get-Item -LiteralPath $path -Force
-    if ($item.PSIsContainer) { throw 'Startup executable must be a file.' }
+    if ($item.PSIsContainer -ne [bool]$Directory) { throw 'Unexpected startup path type.' }
     $chain = [System.Collections.Generic.List[object]]::new()
     $chain.Add($item)
-    $parent = $item.Directory
+    if ($Directory) { $parent = $item.Parent } else { $parent = $item.Directory }
     while ($null -ne $parent) { $chain.Add($parent); $parent = $parent.Parent }
+    $installationDirectory = if ($Directory) { $item.FullName } else { $item.Directory.FullName }
     $chain.Reverse()
     foreach ($entry in $chain) {
         if (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -56,11 +112,11 @@ function Assert-ProtectedExecutable([string]$path) {
         }
         $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
         if ($null -eq $raw.DiscretionaryAcl) { throw 'Elevated startup refuses a null DACL.' }
-        # CreateFiles/WriteData, WriteEA, WriteAttributes, DeleteChild, Delete,
-        # WriteDac, WriteOwner. CreateDirectories alone at C:\ is harmless for
-        # this existing chain. AppendData is additionally forbidden on the file.
-        $dangerous = 2 -bor 16 -bor 256 -bor 64 -bor 65536 -bor 262144 -bor 524288
-        if ($entry -isnot [System.IO.DirectoryInfo]) { $dangerous = $dangerous -bor 4 }
+        # Existing directories need protection from deletion, ACL/owner and
+        # attribute changes. Creating siblings cannot replace an existing chain.
+        # Files additionally forbid WriteData and AppendData.
+        $dangerous = 16 -bor 256 -bor 64 -bor 65536 -bor 262144 -bor 524288 -bor 0x10000000 -bor 0x40000000
+        if ($entry -isnot [System.IO.DirectoryInfo] -or $entry.FullName -ieq $installationDirectory) { $dangerous = $dangerous -bor 2 -bor 4 }
         foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
             if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
                 ($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
@@ -69,6 +125,81 @@ function Assert-ProtectedExecutable([string]$path) {
                 throw 'Elevated startup refuses user-writable paths. Install the executable in protected Program Files; do not weaken its ACL.'
             }
         }
+    }
+}
+"#;
+
+// The destination is fixed and resolved again under the elevated token. Existing
+// directories are never repaired by changing their ACLs.
+const MANAGED_INSTALL: &str = r#"
+function Get-ManagedExecutable([string]$userSid, [string]$digest) {
+    if ($digest -notmatch '^[0-9A-Fa-f]{64}$') { throw 'Invalid startup digest.' }
+    $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+    if ([String]::IsNullOrEmpty($programFiles)) { throw 'Program Files known folder is unavailable.' }
+    return [IO.Path]::Combine($programFiles, 'PCActivityScanner.Startup', $userSid, ('pc_activity_scanner-' + $digest.ToLowerInvariant() + '.exe'))
+}
+function Install-ManagedExecutable([string]$source, [string]$userSid, [string]$expectedHash) {
+    $script:startupStage = 41
+    $target = Get-ManagedExecutable $userSid $expectedHash
+    $directory = [IO.Path]::GetDirectoryName($target)
+    $productDirectory = [IO.Path]::GetDirectoryName($directory)
+    $programFiles = [IO.Path]::GetDirectoryName($productDirectory)
+    # Validate the complete existing chain before creating anything.
+    Assert-ProtectedExecutable $programFiles -Directory
+    foreach ($path in @($productDirectory, $directory)) {
+        if (-not [IO.Directory]::Exists($path)) { $null = [IO.Directory]::CreateDirectory($path) }
+        Assert-ProtectedExecutable $path -Directory
+        $script:startupStage = 42
+        $marker = [IO.Path]::Combine($path, 'owner.txt')
+        $identity = 'dev.97dmitry.pc_activity_scanner.autostart.v1:'
+        if ($path -ieq $directory) { $identity += $userSid } else { $identity += 'root' }
+        if ([IO.File]::Exists($marker)) {
+            Assert-ProtectedExecutable $marker
+            if ([IO.File]::ReadAllText($marker) -cne $identity) { throw 'Managed startup directory belongs to another application.' }
+        } else {
+            # Never claim an existing directory containing unrelated data.
+            if (@([IO.Directory]::EnumerateFileSystemEntries($path)).Count -ne 0) { throw 'Managed startup directory is not empty.' }
+            $markerStream = [IO.File]::Open($marker, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try {
+                $bytes = [Text.Encoding]::UTF8.GetBytes($identity)
+                $markerStream.Write($bytes, 0, $bytes.Length)
+            } finally { $markerStream.Dispose() }
+            Assert-ProtectedExecutable $marker
+        }
+    }
+    $script:startupStage = 41
+    if ([IO.File]::Exists($target)) {
+        Assert-ProtectedExecutable $target
+        if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ieq $expectedHash) { return $target }
+        $script:startupStage = 45
+        throw 'Existing managed startup file does not match its digest; refusing to overwrite.'
+    }
+    $staging = [IO.Path]::Combine($directory, [Guid]::NewGuid().ToString('N') + '.tmp')
+    $inputStream = $null
+    $outputStream = $null
+    try {
+        $script:startupStage = 43
+        $inputStream = [IO.File]::Open($source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $outputStream = [IO.File]::Open($staging, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $inputStream.CopyTo($outputStream)
+        $outputStream.Flush($true)
+        $outputStream.Dispose(); $outputStream = $null
+        $script:startupStage = 45
+        if ((Get-FileHash -LiteralPath $staging -Algorithm SHA256).Hash -ine $expectedHash) { throw 'Startup source changed after approval. Retry from the current application.' }
+        $script:startupStage = 41
+        Assert-ProtectedExecutable $staging
+        if ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -gt $expires) { $script:startupStage = 46; throw 'Startup approval expired; retry.' }
+        # Digest-addressed files are never overwritten, including running images.
+        $script:startupStage = 43
+        [IO.File]::Move($staging, $target)
+        Assert-ProtectedExecutable $target
+        $script:startupStage = 45
+        if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ine $expectedHash) { throw 'Installed startup digest does not match approved executable.' }
+        return $target
+    } finally {
+        if ($null -ne $outputStream) { $outputStream.Dispose() }
+        if ($null -ne $inputStream) { $inputStream.Dispose() }
+        if ([IO.File]::Exists($staging)) { [IO.File]::Delete($staging) }
     }
 }
 "#;
@@ -101,20 +232,24 @@ fn configuration_script(
     expires: u64,
 ) -> String {
     let mut script = format!(
-        "$sid = {}\n$exe = {}\n$expires = {expires}\nif ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -gt $expires) {{ throw 'Startup approval expired; retry.' }}\n",
+        "$sid = {}\n$exe = {}\n$expires = {expires}\nif ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -gt $expires) {{ $script:startupStage = 46; throw 'Startup approval expired; retry.' }}\n",
         literal(sid),
         literal(exe)
     );
+    script.push_str("$script:startupStage = 42\n");
     script.push_str(TASK_CONTEXT);
     if !enabled {
-        script.push_str("if ($null -ne $task) { $folder.DeleteTask($name, 0) }\n");
+        script.push_str(
+            "$script:startupStage = 44\nif ($null -ne $task) { $folder.DeleteTask($name, 0) }\n",
+        );
         return script;
     }
     if elevated {
         script.push_str(PROTECTED_PATH);
-        script.push_str("Assert-ProtectedExecutable $exe\n");
+        script.push_str("$script:startupStage = 41\nAssert-ProtectedExecutable $exe\n");
     }
     script.push_str(&format!(r#"
+$script:startupStage = 44
 $definition = $service.NewTask(0)
 $definition.RegistrationInfo.Source = 'dev.97dmitry.pc_activity_scanner.autostart.v1'
 $definition.RegistrationInfo.Description = 'PC Activity Scanner: interactive startup for the selected user.'
@@ -134,6 +269,7 @@ $action.Path = $exe
 $action.WorkingDirectory = [System.IO.Path]::GetDirectoryName($exe)
 $flags = 2
 if ($null -ne $task) {{ $flags = 4 }}
+if ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -gt $expires) {{ $script:startupStage = 46; throw 'Startup approval expired; retry.' }}
 $null = $folder.RegisterTaskDefinition($name, $definition, $flags, $sid, $null, 3, $null)
 "#, u8::from(elevated)));
     script
@@ -141,7 +277,10 @@ $null = $folder.RegisterTaskDefinition($name, $definition, $flags, $sid, $null, 
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use super::{PROTECTED_PATH, TASK_CONTEXT, configuration_script, encoded_command, literal};
+    use super::{
+        Error, MANAGED_INSTALL, PROTECTED_PATH, State, TASK_CONTEXT, configuration_script,
+        encoded_command, literal,
+    };
     use serde::Deserialize;
     use std::io::{Read, Write};
     use std::os::windows::{ffi::OsStringExt, process::CommandExt};
@@ -149,13 +288,6 @@ mod windows {
     use std::process::{Command, Stdio};
     use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-    #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-    pub struct State {
-        pub enabled: bool,
-        pub elevated: bool,
-        pub needs_repair: bool,
-    }
 
     #[derive(Deserialize)]
     struct Context {
@@ -173,7 +305,7 @@ mod windows {
     /// A single bounded background worker. No process wait occurs on the GUI thread.
     pub struct Controller {
         requests: SyncSender<Request>,
-        results: Receiver<Result<State, String>>,
+        results: Receiver<Result<State, Error>>,
         busy: bool,
     }
 
@@ -190,8 +322,21 @@ mod windows {
             std::thread::spawn(move || {
                 while let Ok(request) = receive.recv() {
                     let result = match request {
-                        Request::Query => query().map(|context| context.state),
-                        Request::Configure(state) => configure(state),
+                        Request::Query => {
+                            query()
+                                .map(|context| context.state)
+                                .map_err(|details| Error {
+                                    message: "Не удалось проверить автозапуск. Повторите проверку."
+                                        .to_owned(),
+                                    details,
+                                    state: None,
+                                })
+                        }
+                        Request::Configure(state) => configure(state).map_err(|details| {
+                            let mut error = Error::from(details);
+                            error.state = query().ok().map(|context| context.state);
+                            error
+                        }),
                     };
                     if send.send(result).is_err() {
                         break;
@@ -227,7 +372,7 @@ mod windows {
             }
         }
 
-        pub fn poll(&mut self) -> Option<Result<State, String>> {
+        pub fn poll(&mut self) -> Option<Result<State, Error>> {
             match self.results.try_recv() {
                 Ok(result) => {
                     self.busy = false;
@@ -236,7 +381,9 @@ mod windows {
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) if self.busy => {
                     self.busy = false;
-                    Some(Err("Поток настройки автозапуска завершился".to_owned()))
+                    Some(Err(Error::from(
+                        "Поток настройки автозапуска завершился".to_owned(),
+                    )))
                 }
                 Err(_) => None,
             }
@@ -265,12 +412,19 @@ mod windows {
         let wrapped = format!(
             r#"
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 try {{
 {script}
 }} catch {{
-    $message = $_.Exception.Message
-    [Console]::Error.WriteLine($message.Substring(0, [Math]::Min(2048, $message.Length)))
+    $exception = $_.Exception
+    $message = [String]::Empty
+    while ($null -ne $exception) {{
+        $message += "HResult=" + $exception.HResult + " NativeError=" + $exception.NativeErrorCode + " " + $exception.Message + "`n"
+        $exception = $exception.InnerException
+    }}
+    [Console]::Error.WriteLine($message)
     exit 1
 }}
 "#
@@ -355,10 +509,23 @@ $needsRepair = $false
 {}
 if ($null -ne $task) {{
     $definition = $task.Definition
+    $actionPath = ''
+    if ($definition.Actions.Count -eq 1 -and $definition.Actions.Item(1).Type -eq 0) {{ $actionPath = $definition.Actions.Item(1).Path }}
+    $pathMatches = $actionPath -ieq $exe
+    if (-not $pathMatches -and $actionPath -ieq (Get-ManagedExecutable $sid (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash)) {{
+        try {{
+            Assert-ProtectedExecutable $actionPath
+            $marker = [IO.Path]::Combine([IO.Path]::GetDirectoryName($actionPath), 'owner.txt')
+            Assert-ProtectedExecutable $marker
+            if ([IO.File]::ReadAllText($marker) -cne ('dev.97dmitry.pc_activity_scanner.autostart.v1:' + $sid)) {{ throw 'Unrecognized managed startup installation.' }}
+            $pathMatches = (Get-FileHash -LiteralPath $actionPath -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+        }} catch {{ $pathMatches = $false }}
+    }}
     if ($definition.Principal.LogonType -ne 3 -or
         $definition.Actions.Count -ne 1 -or $definition.Triggers.Count -ne 1 -or
         $definition.Actions.Item(1).Type -ne 0 -or
-        $definition.Actions.Item(1).Path -ine $exe -or
+        -not $pathMatches -or
+        $definition.Actions.Item(1).WorkingDirectory -ine [IO.Path]::GetDirectoryName($actionPath) -or
         -not [String]::IsNullOrEmpty($definition.Actions.Item(1).Arguments) -or
         $definition.Triggers.Item(1).Type -ne 9 -or
         $definition.Triggers.Item(1).UserId -ine $sid -or
@@ -376,7 +543,7 @@ if ($null -ne $task) {{
             identity_script(),
             literal(exe),
             TASK_CONTEXT,
-            PROTECTED_PATH
+            format_args!("{}\n{}", PROTECTED_PATH, MANAGED_INSTALL)
         );
         let output = execute(&script, Duration::from_secs(30))?;
         serde_json::from_str(output.trim_start_matches('\u{feff}').trim())
@@ -402,25 +569,56 @@ if ($null -ne $task) {{
         let exe = exe
             .to_str()
             .ok_or("Путь программы содержит некорректный Unicode")?;
-        if state.enabled && state.elevated {
-            execute(
-                &format!(
-                    "{}\nAssert-ProtectedExecutable {}",
-                    PROTECTED_PATH,
-                    literal(exe)
-                ),
-                Duration::from_secs(30),
-            )?;
-        }
         let expires = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_secs()
             + 120;
-        let script =
+        let mut script =
             configuration_script(&context.sid, exe, state.enabled, state.elevated, expires);
+        if state.enabled && state.elevated {
+            let hash = execute(
+                &format!(
+                    "(Get-FileHash -LiteralPath {} -Algorithm SHA256).Hash",
+                    literal(exe)
+                ),
+                Duration::from_secs(30),
+            )?;
+            let hash = hash.trim();
+            if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("Invalid executable SHA256".to_owned());
+            }
+            // The source and its digest are fixed before approval. The elevated
+            // helper reads the source through a handle that denies concurrent writes.
+            let prepare = format!(
+                "$expectedHash = {}\n{}\n$exe = Install-ManagedExecutable $exe $sid $expectedHash\n",
+                literal(hash),
+                MANAGED_INSTALL
+            );
+            let marker = "Assert-ProtectedExecutable $exe\n";
+            let offset = script
+                .find(marker)
+                .ok_or("Missing protected installation guard")?;
+            script.insert_str(offset, &prepare);
+        }
+        // Ordinary per-user startup needs no consent for a new/limited task.
+        // Replacing or deleting a task formerly registered as Highest can require UAC.
+        if !state.enabled || !state.elevated {
+            match execute(&script, Duration::from_secs(30)) {
+                Ok(_) => return query().map(|context| context.state),
+                Err(error)
+                    if !error.contains("-2147024891")
+                        && !error.contains("80070005")
+                        && !error.contains("Access is denied")
+                        && !error.contains("E_ACCESSDENIED") =>
+                {
+                    return Err(error);
+                }
+                Err(_) => {}
+            }
+        }
         let privileged = format!(
-            "$ErrorActionPreference='Stop'\ntry {{\n{script}\nexit 0\n}} catch {{ exit 1 }}"
+            "$ErrorActionPreference='Stop'\n$ProgressPreference='SilentlyContinue'\n$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')\n$script:startupStage=44\ntry {{\n{script}\nexit 0\n}} catch {{ exit $script:startupStage }}"
         );
         let path = powershell_path()?;
         let path = path.to_str().ok_or("Некорректный системный путь Windows")?;
@@ -433,8 +631,8 @@ if ($null -ne $task) {{
         }
         let wrapper = format!(
             r#"
-$process = Start-Process -FilePath {} -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-EncodedCommand',{}) -Verb RunAs -Wait -PassThru
-if ($process.ExitCode -ne 0) {{ throw 'Startup configuration failed, was cancelled, or approval expired. Check Task Scheduler permissions and retry.' }}
+$process = Start-Process -FilePath {} -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-EncodedCommand',{}) -WorkingDirectory ([Environment]::SystemDirectory) -Verb RunAs -Wait -PassThru
+if ($process.ExitCode -ne 0) {{ throw ('Startup helper failed. ExitCode=' + $process.ExitCode + '; stages: 41=protected path, 42=ownership, 43=copy, 44=task registration, 45=SHA256, 46=approval expiry. Child stderr is unavailable across UAC.') }}
 "#,
             literal(path),
             literal(&encoded)
@@ -444,6 +642,145 @@ if ($process.ExitCode -ne 0) {{ throw 'Startup configuration failed, was cancell
     }
     #[cfg(test)]
     mod tests {
+        /// Explicitly invoked only in a disposable Windows CI runner. Never uses
+        /// the production task name and never enables Highest or installs files.
+        #[test]
+        #[ignore = "Mutates only a unique disposable CI Task Scheduler task; requires explicit opt-in"]
+        fn disposable_ci_limited_task_roundtrip() {
+            assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+            assert_eq!(
+                std::env::var("PC_ACTIVITY_SCANNER_CI_TASK_TEST").as_deref(),
+                Ok("1")
+            );
+            let identity = super::query().expect("Read original identity");
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let task_name = format!("PCActivityScanner-CI-{}-{nonce}", std::process::id());
+            let exe = std::env::current_exe()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let expires = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 120;
+            let original = "$name = 'PCActivityScanner-' + $sid";
+            let replacement = format!("$name = {}", super::literal(&task_name));
+            let script = super::configuration_script(&identity.sid, &exe, true, false, expires)
+                .replace(original, &replacement);
+            let cleanup = super::configuration_script(&identity.sid, &exe, false, false, expires)
+                .replace(original, &replacement);
+            let result = super::execute(&script, std::time::Duration::from_secs(30));
+            // Cleanup is attempted even if registration returns an error.
+            let verified = if result.is_ok() {
+                let inspect = format!(
+                    "$sid = {}\n{}\nif ($null -eq $task -or -not $task.Enabled -or $task.Definition.Principal.RunLevel -ne 0 -or $task.Definition.Actions.Item(1).Path -ine {}) {{ throw 'CI task configuration differs from request.' }}",
+                    super::literal(&identity.sid),
+                    super::TASK_CONTEXT.replace(original, &replacement),
+                    super::literal(&exe)
+                );
+                super::execute(&inspect, std::time::Duration::from_secs(30))
+            } else {
+                Ok(String::new())
+            };
+            let removed = super::execute(&cleanup, std::time::Duration::from_secs(30));
+            result.expect("Limited per-user registration failed");
+            verified.expect("Read-back task validation failed");
+            removed.expect("CI task cleanup failed");
+            let absent = format!(
+                "$sid = {}\n{}\nif ($null -ne $task) {{ throw 'CI task was not removed.' }}",
+                super::literal(&identity.sid),
+                super::TASK_CONTEXT.replace(original, &replacement)
+            );
+            super::execute(&absent, std::time::Duration::from_secs(30)).expect("Verify removal");
+        }
+
+        #[test]
+        #[ignore = "Installs and removes a uniquely named protected scratch copy only on an opted-in disposable Windows CI runner"]
+        fn disposable_ci_managed_install_roundtrip() {
+            assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+            assert_eq!(
+                std::env::var("PC_ACTIVITY_SCANNER_CI_TASK_TEST").as_deref(),
+                Ok("1")
+            );
+            let identity = super::query().expect("Read original identity");
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let product = format!("PCActivityScanner.CI-{}-{nonce}", std::process::id());
+            let exe = std::env::current_exe()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let installer = super::MANAGED_INSTALL
+                .replace("'PCActivityScanner.Startup'", &super::literal(&product));
+            let task_name = format!(
+                "PCActivityScanner-CI-Highest-{}-{nonce}",
+                std::process::id()
+            );
+            let original = "$name = 'PCActivityScanner-' + $sid";
+            let replacement = format!("$name = {}", super::literal(&task_name));
+            let task_context = super::TASK_CONTEXT.replace(original, &replacement);
+            let registration =
+                super::configuration_script(&identity.sid, "unused", true, true, 4_000_000_000)
+                    .replace(original, &replacement)
+                    .replace("$exe = 'unused'", "$exe = $target");
+            let cleanup_task =
+                super::configuration_script(&identity.sid, "unused", false, false, 4_000_000_000)
+                    .replace(original, &replacement);
+            let script = format!(
+                r#"
+{}
+{}
+$sid = {}
+$source = {}
+$expires = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 120
+$hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+$target = Get-ManagedExecutable $sid $hash
+$directory = [IO.Path]::GetDirectoryName($target)
+$productDirectory = [IO.Path]::GetDirectoryName($directory)
+try {{
+    $installed = Install-ManagedExecutable $source $sid $hash
+    if ($installed -ine $target) {{ throw 'Installer returned unexpected path.' }}
+    if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ine $hash) {{ throw 'Installed digest mismatch.' }}
+    {}
+    {}
+    if ($null -eq $task -or -not $task.Enabled -or $task.Definition.Principal.RunLevel -ne 1 -or $task.Definition.Actions.Item(1).Path -ine $target) {{ throw 'Highest task configuration differs from installed copy.' }}
+    $second = Install-ManagedExecutable $target $sid $hash
+    if ($second -ine $target) {{ throw 'Repeated installation failed.' }}
+    $rejected = $false
+    try {{ $null = Install-ManagedExecutable $source $sid ('0' * 64) }} catch {{ $rejected = $true }}
+    if (-not $rejected) {{ throw 'Changed source digest was accepted.' }}
+    if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ine $hash) {{ throw 'Failed installation replaced original copy.' }}
+}} finally {{
+    {}
+    # No recursive deletion: only exact files produced by this unique test.
+    foreach ($file in @($target, [IO.Path]::Combine($directory, 'owner.txt'), [IO.Path]::Combine($productDirectory, 'owner.txt'))) {{
+        if ([IO.File]::Exists($file)) {{ Assert-ProtectedExecutable $file; [IO.File]::Delete($file) }}
+    }}
+    foreach ($path in @($directory, $productDirectory)) {{
+        if ([IO.Directory]::Exists($path)) {{ Assert-ProtectedExecutable $path -Directory; [IO.Directory]::Delete($path, $false) }}
+    }}
+}}
+"#,
+                super::PROTECTED_PATH,
+                installer,
+                super::literal(&identity.sid),
+                super::literal(&exe),
+                registration,
+                task_context,
+                cleanup_task
+            );
+            super::execute(&script, std::time::Duration::from_secs(150))
+                .expect("Disposable protected installation roundtrip failed");
+        }
+
         #[test]
         fn actual_startup_query_is_read_only_and_succeeds() {
             let context = super::query().expect("Read-only Task Scheduler query failed: Windows PowerShell and the Task Scheduler service must be available");
@@ -453,11 +790,78 @@ if ($process.ExitCode -ne 0) {{ throw 'Startup configuration failed, was cancell
 }
 
 #[cfg(target_os = "windows")]
-pub use windows::{Controller, State};
+pub use windows::Controller;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn errors_keep_shell_diagnostics_out_of_product_messages() {
+        let details = "#< CLIXML <Objs>Elevated startup refuses user-writable paths</Objs>";
+        let error = Error::from(details.to_owned());
+        assert!(!error.message.contains("CLIXML"));
+        assert!(!error.message.contains("user-writable"));
+        assert_eq!(error.details, details);
+        assert!(error.state.is_none());
+        assert!(
+            Error::from("Startup helper failed. ExitCode=45".to_owned())
+                .message
+                .contains("изменился")
+        );
+        assert!(
+            Error::from("Startup helper failed. ExitCode=42".to_owned())
+                .message
+                .contains("другой конфигурацией")
+        );
+        assert_eq!(error.to_string(), error.message);
+        assert!(
+            Error::from("NativeError=1223".to_owned())
+                .message
+                .contains("отменена")
+        );
+    }
+
+    #[test]
+    fn managed_install_pins_copy_and_validates_before_mutations() {
+        let guard = MANAGED_INSTALL
+            .find("Assert-ProtectedExecutable $programFiles -Directory")
+            .unwrap();
+        let create = MANAGED_INSTALL
+            .find("[IO.Directory]::CreateDirectory")
+            .unwrap();
+        let copy = MANAGED_INSTALL
+            .find("$inputStream.CopyTo($outputStream)")
+            .unwrap();
+        let hash = MANAGED_INSTALL.find(".Hash -ine $expectedHash").unwrap();
+        let replace = MANAGED_INSTALL.find("[IO.File]::Move").unwrap();
+        assert!(guard < create && copy < hash && hash < replace);
+        assert!(MANAGED_INSTALL.contains("[IO.FileShare]::Read)"));
+        assert!(MANAGED_INSTALL.contains("[IO.FileMode]::CreateNew"));
+        assert!(MANAGED_INSTALL.contains("SpecialFolder]::ProgramFiles"));
+        assert!(!MANAGED_INSTALL.contains("$env:"));
+        assert!(!MANAGED_INSTALL.contains("Set-Acl"));
+        assert!(MANAGED_INSTALL.contains("ReadAllText($marker) -cne $identity"));
+        assert!(MANAGED_INSTALL.contains("$digest.ToLowerInvariant()"));
+        assert!(!MANAGED_INSTALL.contains("[IO.File]::Replace"));
+    }
+
+    #[test]
+    fn elevated_payload_fits_windows_command_line() {
+        let mut script = configuration_script(
+            "S-1-5-21-123-456-789-1000",
+            "C:\\Users\\test\\Downloads\\pc_activity_scanner.exe",
+            true,
+            true,
+            12345,
+        );
+        script.push_str(MANAGED_INSTALL);
+        script.push_str(&"a".repeat(256));
+        assert!(
+            encoded_command(&script).len() < 30_000,
+            "UAC payload exceeds Windows command line limit"
+        );
+    }
 
     #[test]
     fn powershell_literals_preserve_untrusted_path_characters() {

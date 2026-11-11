@@ -82,6 +82,8 @@ pub struct HistoryUi {
     compare_metric: Metric,
     export: Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
     pub feedback: Option<String>,
+    pub diagnostics_requested: bool,
+    pub diagnostic_error: Option<String>,
 }
 impl Default for HistoryUi {
     fn default() -> Self {
@@ -101,6 +103,8 @@ impl Default for HistoryUi {
             compare_metric: Metric::Cpu,
             export: None,
             feedback: None,
+            diagnostics_requested: false,
+            diagnostic_error: None,
         }
     }
 }
@@ -176,7 +180,11 @@ impl HistoryUi {
                 Ok(result) => {
                     self.feedback = Some(match result {
                         Ok(path) => format!("История сохранена: {}", path.display()),
-                        Err(e) => format!("Ошибка экспорта истории: {e}"),
+                        Err(e) => {
+                            self.diagnostic_error = Some(e);
+                            "Не удалось экспортировать историю. Подробности доступны в диагностике."
+                                .into()
+                        }
                     });
                     self.export = None;
                 }
@@ -260,8 +268,13 @@ impl HistoryUi {
             );
         }
         ui.add_space(8.0);
-        if let Some(error) = &latest.status.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, format!("История: {error}"));
+        if latest.status.error.is_some() {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(RAM, "Не все измерения истории доступны");
+                if ui.small_button("Подробнее").clicked() {
+                    self.diagnostics_requested = true;
+                }
+            });
         }
         if latest.status.error.is_some() && !latest.status.ready {
             ui.add_space(16.0);
@@ -269,10 +282,13 @@ impl HistoryUi {
             ui.label("Устраните указанную проблему и перезапустите приложение. Текущие измерения доступны на вкладке «Процессы».");
             return;
         }
-        if latest.request_id == self.requested_query.request_id
-            && let Some(error) = &latest.query_error
-        {
-            ui.colored_label(egui::Color32::LIGHT_RED, format!("Запрос истории: {error}"));
+        if latest.request_id == self.requested_query.request_id && latest.query_error.is_some() {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(RAM, "Не удалось обновить выбранный период");
+                if ui.small_button("Подробнее").clicked() {
+                    self.diagnostics_requested = true;
+                }
+            });
         }
         if !matching
             && latest.request_id == self.requested_query.request_id
@@ -460,15 +476,20 @@ impl HistoryUi {
                         0.0
                     })
                     .desired_width(180.0)
-                    .fill(ACCENT)
-                    .text(format!(
+                    .fill(ACCENT),
+                );
+                // Keep the value outside the fill: one text color cannot contrast
+                // with both the bright filled area and the dark empty area.
+                ui.label(
+                    egui::RichText::new(format!(
                         "{:.1}% вклада",
                         if total > 0.0 {
                             app.cpu_seconds / total * 100.0
                         } else {
                             0.0
                         }
-                    )),
+                    ))
+                    .strong(),
                 );
                 ui.label(format!(
                     "сред. {:.1}%   пик {:.1}%",
@@ -652,7 +673,7 @@ impl HistoryUi {
                             .on_hover_text(if app.network_observed_secs > 0.0 {
                                 format!("Сеть наблюдалась {}. Сумма относится только к измеренным интервалам.", duration(app.network_observed_secs))
                             } else {
-                                "Трафик этого приложения не измерялся в выбранном периоде. Включите сбор сети в настройках; прошлый трафик восстановить нельзя.".into()
+                                "Трафик этого приложения не измерялся в выбранном периоде. Сбор можно включить на основном экране; прошлый трафик восстановить нельзя.".into()
                             });
                             row.col(|ui| {
                                 ui.label(format!(

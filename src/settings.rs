@@ -11,6 +11,7 @@ pub struct Settings {
     pub poll_interval_ms: u64,
     pub enable_linux_traffic: bool,
     pub enable_windows_traffic: bool,
+    pub network_setup_complete: bool,
     pub history_enabled: bool,
     pub history_retention_days: u32,
 }
@@ -22,6 +23,7 @@ impl Default for Settings {
             poll_interval_ms: 2000,
             enable_linux_traffic: false,
             enable_windows_traffic: false,
+            network_setup_complete: false,
             history_enabled: true,
             history_retention_days: 1,
         }
@@ -29,6 +31,25 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn network_enabled(&self) -> bool {
+        (cfg!(target_os = "linux") && self.enable_linux_traffic)
+            || (cfg!(target_os = "windows") && self.enable_windows_traffic)
+    }
+
+    pub fn should_offer_network_setup(&self) -> bool {
+        !self.network_setup_complete && !self.network_enabled()
+    }
+
+    pub fn choose_network(&mut self, enabled: bool) {
+        self.network_setup_complete = true;
+        if cfg!(target_os = "linux") {
+            self.enable_linux_traffic = enabled;
+        }
+        if cfg!(target_os = "windows") {
+            self.enable_windows_traffic = enabled;
+        }
+    }
+
     pub fn file_path() -> Option<PathBuf> {
         ProjectDirs::from("dev", "97Dmitry", "PCActivityScanner")
             .map(|dirs| dirs.config_dir().join("settings.json"))
@@ -76,6 +97,36 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_disabled_network_offers_setup_without_requesting_privileges() {
+        let config: Settings = serde_json::from_str(
+            r#"{"enable_linux_traffic":false,"enable_windows_traffic":false}"#,
+        )
+        .unwrap();
+        assert!(config.should_offer_network_setup());
+        assert!(!config.network_enabled());
+    }
+
+    #[test]
+    fn explicit_off_survives_reload_and_does_not_offer_setup() {
+        let mut config = Settings::default();
+        config.choose_network(false);
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert!(!restored.network_enabled());
+        assert!(!restored.should_offer_network_setup());
+    }
+
+    #[test]
+    fn network_consent_persists_for_retry_and_future_launches() {
+        let mut config = Settings::default();
+        config.choose_network(true);
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert!(restored.network_enabled());
+        assert!(!restored.should_offer_network_setup());
+    }
 
     #[test]
     fn existing_settings_enable_one_day_history_by_default() {

@@ -19,7 +19,11 @@
 - Windows `autostart` queries actual per-user Task Scheduler state. Preserve the
   original user SID across UAC, validate task ownership, and require a protected
   executable/ancestor ACL chain for Highest. Never expose arbitrary privileged
-  commands or perform task/PowerShell work on the GUI thread.
+  commands or perform task/PowerShell work on the GUI thread. Highest startup
+  uses fixed protected per-SID digest-addressed copies: pin source SHA256 before
+  UAC, verify copy/ACL/markers, never weaken permissions or replace a running EXE.
+  Old managed releases are retained. Mutating Windows CI tests are opt-in/ignored,
+  use unique test namespaces and must never change host or production tasks.
 - History query failures are distinct from recording/storage warnings. Keep the
   displayed query and snapshot paired during background refresh and CSV export.
 - Tests belong beside the Rust implementation. For accounting/parsers/settings,

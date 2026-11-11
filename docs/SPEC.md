@@ -1,6 +1,6 @@
 # PC Activity Scanner — product specification (SDD)
 
-Status: versioned desktop release. Version: 0.4.1. Supported signals are listed below.
+Status: versioned desktop release. Version: 0.5.0. Supported signals are listed below.
 
 ## Objective
 

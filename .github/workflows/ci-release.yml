@@ -57,6 +57,12 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Run unit tests
         run: cargo test --all-targets --locked
+      - name: Windows startup configuration integration
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        env:
+          PC_ACTIVITY_SCANNER_CI_TASK_TEST: '1'
+        run: cargo test --all-targets --locked disposable_ci_ -- --ignored --nocapture --test-threads=1
       - name: Release build
         run: cargo build --release --locked
       - name: Windows ETW TCP UDP runtime smoke test
