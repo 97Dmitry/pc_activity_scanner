@@ -558,8 +558,24 @@ impl ActivityApp {
             self.startup_apply_requested = false;
             self.startup.query();
         }
-        if self.startup_current.is_some_and(|state| state.needs_repair) {
-            ui.label("Путь запуска изменился. Повторное включение обновит настройку.");
+        if let Some(actual) = self
+            .startup_current
+            .filter(|state| state.enabled && state.needs_repair)
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Автозапуск использует другую копию приложения");
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Обновить автозапуск"))
+                    .clicked()
+                {
+                    self.startup_draft = crate::autostart::State {
+                        needs_repair: false,
+                        ..actual
+                    };
+                    self.startup_apply_requested = true;
+                    self.startup.configure(self.startup_draft);
+                }
+            });
         }
         egui::CollapsingHeader::new("Дополнительный режим").show(ui, |ui| {
             ui.label("Запуск с правами администратора: Windows установит защищённую копию приложения. Повышенные права получит всё приложение.");
