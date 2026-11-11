@@ -306,9 +306,7 @@ impl LinuxSession {
                 finished = child.wait().is_ok();
             }
         }
-        if finished
-            && let Some(reader) = self.reader.take()
-        {
+        if finished && let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
     }
