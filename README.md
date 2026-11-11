@@ -4,7 +4,41 @@ Local desktop process and resource monitor in **Rust**. CPU, GPU, RAM, network t
 
 [Specification / acceptance criteria](docs/SPEC.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Release artifacts](https://github.com/97Dmitry/pc_activity_scanner/releases)
 
-## Quick start
+## Скачать готовые сборки (Rust не требуется)
+
+**[Перейти к готовым сборкам — GitHub Releases](https://github.com/97Dmitry/pc_activity_scanner/releases)**
+
+Откройте самый новый **Snapshot** и разверните раздел **Assets**:
+
+- **Windows 11 x64:** `pc_activity_scanner-windows-x86_64.exe` — скачать и запустить двойным кликом без Cargo, Rust и Visual Studio.
+- **Linux x86_64 (Kubuntu/Ubuntu):** `pc_activity_scanner-linux-x86_64` — готовый исполняемый файл, Rust не требуется.
+- **Контрольная сумма:** `SHA256SUMS.txt`.
+
+Новый prerelease создаётся **после каждого push в `main`, только если успешно прошли CI, тесты и release-сборки Windows/Linux**. Бинарники пока не подписаны, а полное ручное тестирование на реальных ПК ещё не завершено.
+
+### Запуск готовой Linux-сборки
+
+Скачайте файл из релиза и выполните в папке загрузки:
+
+```bash
+sudo apt update
+sudo apt install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev libssl-dev
+chmod +x pc_activity_scanner-linux-x86_64
+./pc_activity_scanner-linux-x86_64
+```
+
+Для подробного мониторинга **трафика отдельных процессов** нужен NetHogs. Он запускается через Polkit из защищённого системного бинарника; GUI запускается без sudo:
+
+```bash
+sudo apt install -y nethogs policykit-1
+sudo install -D -o root -g root -m 0755 pc_activity_scanner-linux-x86_64 /usr/local/bin/pc-activity-scanner
+pc-activity-scanner
+```
+
+В Windows текущая сборка показывает CPU/RAM и общесистемный трафик; индивидуальный сетевой трафик и GPU по PID ещё не реализованы. Для KDE Plasma Wayland системный трей зависит от поддержки StatusNotifierItem.
+
+## Сборка из исходников (для разработчиков)
+
 
 ### Linux (Kubuntu / Ubuntu)
 
