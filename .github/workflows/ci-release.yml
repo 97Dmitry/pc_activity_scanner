@@ -73,7 +73,7 @@ jobs:
         run: |
           cd dist
           sha256sum pc_activity_scanner-* > SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: snapshot-${{ github.sha }}
           target_commitish: ${{ github.sha }}
