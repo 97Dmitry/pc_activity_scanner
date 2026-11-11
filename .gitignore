@@ -5,3 +5,8 @@
 *.swp
 *.tmp
 *.csv
+
+__pycache__/
+*.pyc
+/release-assets/
+/dist/

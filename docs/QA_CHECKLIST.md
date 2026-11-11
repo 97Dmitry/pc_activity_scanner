@@ -41,4 +41,4 @@ This project is not declared production-ready until the following pass on actual
 - [ ] On Windows, only CPU/RAM and global networking have values: unsupported per-PID metrics show `—`.
 - [ ] No outbound telemetry or background updates; no logs containing packet payloads or private window content.
 - [ ] All Actions jobs pass for each release SHA; binary artifacts download and launch.
-- [ ] Release uses a unique SHA tag and is marked pre-release; SHA256 checksums are included, but code signing remains planned.
+- [ ] Release uses a version tag matching Cargo.toml/Cargo.lock, includes both platform archives and standalone binaries with SHA256 checksums, and appears as Latest. Release notes disclose known limits and completed checks; code signing remains planned.

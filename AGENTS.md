@@ -17,6 +17,9 @@
   `cargo test --all-targets --locked`, `cargo build --release --locked`.
 - Keep `README.md`, `docs/SPEC.md` and `docs/QA_CHECKLIST.md` consistent with
   supported metrics. Virtual-display tests do not establish Windows/tray/Polkit
-  acceptance. Snapshots are prereleases, not stable releases.
+  acceptance. Version tags publish releases; normal main pushes do not. See
+  `docs/RELEASING.md`; tags, Cargo versions and release notes must match.
+- Main is protected, including admins. Use PRs and both CI checks; never bypass
+  protection or force-update published version tags.
 - Work in the current checkout. Do not commit, push or change repository
   protection without explicit authorization.

@@ -27,4 +27,8 @@ Never run the desktop GUI as root. The opt-in Linux NetHogs helper is only enabl
 
 ## Releases
 
-Every passing push to main produces a commit-specific pre-release with Linux and Windows executables and SHA256 checksums. Signatures and stable release criteria are tracked in GitHub issues.
+Releases are published from version tags after both platform checks pass.
+Follow [RELEASING.md](docs/RELEASING.md) for version changes, release notes,
+packaging and publication. Normal main pushes do not publish snapshots.
+Main is protected: use a PR with both platform checks passing; force pushes and
+deletion are disabled, including for administrators.

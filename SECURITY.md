@@ -13,6 +13,12 @@ Please use **GitHub → Security → Report a vulnerability** (private security 
 - Exported CSV filenames are unique and spreadsheet formulas are neutralized before writing.
 - GPU and network counters may be unavailable because of driver limitations or process permissions; absence is never reported as zero.
 
-## Still required before stable release
+## Delivery verification and remaining work
 
-OS-native runtime smoke tests, security review of helper and packaging, SBOM/dependency audit, signed artifacts and Windows native per-PID network/GPU backends are tracked as open GitHub issues. Snapshot pre-releases should be considered unverified on real end-user desktops.
+Native desktop runtime checks, helper/packaging security review, dependency
+inventory/audit and signed artifacts remain work before production-readiness
+claims. Releases state their completed checks and limitations explicitly;
+passing CI does not establish real desktop/tray/Polkit acceptance. Windows
+per-PID network/GPU backends are separate feature work, not implied by a
+version number. Published files are currently unsigned; SHA256SUMS verifies
+file integrity, not publisher identity.
