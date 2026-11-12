@@ -10,7 +10,7 @@ repository = "https://github.com/97Dmitry/pc_activity_scanner"
 [dependencies]
 eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 egui_extras = "=0.37.0"
-sysinfo = "=0.37.2"
+sysinfo = "=0.40.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 directories = "6.0"
