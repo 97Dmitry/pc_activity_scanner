@@ -81,7 +81,11 @@ or helper failure make network data unavailable. GPU remains unsupported.
 Windows startup is managed by an asynchronous per-user Task Scheduler adapter.
 It queries actual OS state rather than treating JSON as authoritative. Original
 user SID is preserved across UAC. Full-GUI elevated startup is optional and
-requires a protected executable path; writable portable locations are rejected.
+prepares a protected, per-user, digest-addressed copy after explicit consent.
+The source SHA256 is pinned before UAC and checked during installation; fixed
+managed directories and their owners/ACLs/markers are verified. Existing running
+images are never replaced. Raw shell errors stay in diagnostics, while the
+normal flow retains confirmed state and recovery controls.
 Task configuration never runs on the GUI thread. See `docs/DOWNLOADS.md`.
 
 ## Verification boundaries
