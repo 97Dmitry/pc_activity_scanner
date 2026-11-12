@@ -205,6 +205,21 @@ function Install-ManagedExecutable([string]$source, [string]$userSid, [string]$e
 "#;
 
 const TASK_CONTEXT: &str = r#"
+# Task Scheduler may return DOMAIN\account even when registered with a SID.
+# Resolve Windows identities; never compare spelling or trust a matching name.
+function Resolve-StartupSid([string]$identity) {
+    if ([String]::IsNullOrWhiteSpace($identity)) { return $null }
+    try {
+        if ($identity.StartsWith('S-1-', [StringComparison]::OrdinalIgnoreCase)) {
+            return [Security.Principal.SecurityIdentifier]::new($identity).Value
+        }
+        return [Security.Principal.NTAccount]::new($identity).Translate([Security.Principal.SecurityIdentifier]).Value
+    } catch { return $null }
+}
+function Test-OwnedStartupTask([object]$definition, [string]$expectedSid) {
+    return ($definition.RegistrationInfo.Source -ceq 'dev.97dmitry.pc_activity_scanner.autostart.v1' -and
+        (Resolve-StartupSid $definition.Principal.UserId) -ieq $expectedSid)
+}
 $service = New-Object -ComObject 'Schedule.Service'
 $service.Connect()
 $folder = $service.GetFolder('\')
@@ -217,9 +232,8 @@ try { $task = $folder.GetTask($name) } catch {
 }
 if ($null -ne $task) {
     $existing = $task.Definition
-    if ($existing.RegistrationInfo.Source -cne 'dev.97dmitry.pc_activity_scanner.autostart.v1' -or
-        $existing.Principal.UserId -ine $sid) {
-        throw 'Startup task name belongs to another task; refusing to change it.'
+    if (-not (Test-OwnedStartupTask $existing $sid)) {
+        throw ('Startup task name belongs to another task; refusing to change it. Source=' + $existing.RegistrationInfo.Source + '; Principal=' + $existing.Principal.UserId + '; ResolvedSid=' + (Resolve-StartupSid $existing.Principal.UserId) + '; ExpectedSid=' + $sid)
     }
 }
 "#;
@@ -528,7 +542,7 @@ if ($null -ne $task) {{
         $definition.Actions.Item(1).WorkingDirectory -ine [IO.Path]::GetDirectoryName($actionPath) -or
         -not [String]::IsNullOrEmpty($definition.Actions.Item(1).Arguments) -or
         $definition.Triggers.Item(1).Type -ne 9 -or
-        $definition.Triggers.Item(1).UserId -ine $sid -or
+        (Resolve-StartupSid ($definition.Triggers.Item(1).UserId)) -ine $sid -or
         -not $definition.Triggers.Item(1).Enabled) {{
         $needsRepair = $true
     }}
@@ -779,6 +793,38 @@ try {{
             );
             super::execute(&script, std::time::Duration::from_secs(150))
                 .expect("Disposable protected installation roundtrip failed");
+        }
+
+        #[test]
+        fn task_identity_accepts_canonical_names_and_fails_closed() {
+            // No scheduler connection or write: exercise the same ownership
+            // predicate against in-memory definitions and real Windows aliases.
+            let functions = super::TASK_CONTEXT.split("$service =").next().unwrap();
+            let script = format!(
+                r#"
+{}
+{}
+function Assert-Owned([string]$principal, [string]$source, [bool]$expected) {{
+    $definition = [PSCustomObject]@{{ RegistrationInfo = [PSCustomObject]@{{ Source = $source }}; Principal = [PSCustomObject]@{{ UserId = $principal }} }}
+    if ((Test-OwnedStartupTask $definition $sid) -ne $expected) {{ throw ('Incorrect ownership decision for ' + $principal + ' source=' + $source) }}
+}}
+$source = 'dev.97dmitry.pc_activity_scanner.autostart.v1'
+Assert-Owned $sid $source $true
+Assert-Owned $identity.Name $source $true
+Assert-Owned $identity.Name.ToUpperInvariant() $source $true
+Assert-Owned 'S-1-5-18' $source ($sid -eq 'S-1-5-18')
+Assert-Owned $sid 'foreign.source' $false
+Assert-Owned $sid $source.ToUpperInvariant() $false
+Assert-Owned '' $source $false
+Assert-Owned 'S-1-not-a-valid-SID' $source $false
+Assert-Owned 'PCActivityScanner-Nonexistent-Identity-8d33b55e' $source $false
+if ((Resolve-StartupSid $identity.Name) -ne $sid) {{ throw 'Account alias did not resolve to original SID.' }}
+"#,
+                functions,
+                super::identity_script()
+            );
+            super::execute(&script, std::time::Duration::from_secs(30))
+                .expect("Windows identity normalization failed");
         }
 
         #[test]

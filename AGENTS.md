@@ -22,6 +22,8 @@
   commands or perform task/PowerShell work on the GUI thread. Highest startup
   uses fixed protected per-SID digest-addressed copies: pin source SHA256 before
   UAC, verify copy/ACL/markers, never weaken permissions or replace a running EXE.
+  Compare Task Scheduler principal/trigger identities by resolved SID (Windows
+  may return an account name); never weaken the exact Source/owner guard.
   Old managed releases are retained. Mutating Windows CI tests are opt-in/ignored,
   use unique test namespaces and must never change host or production tasks.
 - History query failures are distinct from recording/storage warnings. Keep the

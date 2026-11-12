@@ -117,13 +117,17 @@ impl NetworkSample {
         self.status = status.into();
     }
 
-    /// Suppress stale per-process rates if the backend stopped publishing.
-    pub fn expire_if_stale(&mut self, max_age: Duration) {
-        if self.is_available
+    /// Read-only availability for UI consumers; the collector may expire a clone.
+    pub fn has_fresh_data(&self, max_age: Duration) -> bool {
+        self.is_available
             && self
                 .last_frame_at
-                .is_none_or(|last| last.elapsed() > max_age)
-        {
+                .is_some_and(|last| last.elapsed() <= max_age)
+    }
+
+    /// Suppress stale per-process rates if the backend stopped publishing.
+    pub fn expire_if_stale(&mut self, max_age: Duration) {
+        if self.is_available && !self.has_fresh_data(max_age) {
             self.is_available = false;
             self.rates.clear();
             self.status = "Нет новых данных трафика, последняя скорость устарела".into();
@@ -595,6 +599,26 @@ mod tests {
         assert_eq!(frames.front().unwrap().sequence, 3);
         assert_eq!(sample.dropped_frames, 2);
         assert!(sample.status().contains("2"));
+    }
+
+    #[test]
+    fn read_only_availability_rejects_stale_or_missing_frames_before_collector_expiry() {
+        let mut sample = super::NetworkSample {
+            is_available: true,
+            last_frame_at: Some(std::time::Instant::now() - std::time::Duration::from_secs(20)),
+            ..Default::default()
+        };
+        assert!(!sample.has_fresh_data(std::time::Duration::from_secs(7)));
+        assert!(
+            sample.is_available,
+            "availability check must remain read-only"
+        );
+        sample.last_frame_at = None;
+        assert!(!sample.has_fresh_data(std::time::Duration::from_secs(7)));
+        sample.last_frame_at = Some(std::time::Instant::now());
+        assert!(sample.has_fresh_data(std::time::Duration::from_secs(7)));
+        sample.is_available = false;
+        assert!(!sample.has_fresh_data(std::time::Duration::from_secs(7)));
     }
 
     #[test]

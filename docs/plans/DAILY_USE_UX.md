@@ -60,3 +60,15 @@ Read-only actual Windows PowerShell parsing/ACL checks pass; neither agents nor
 default tests changed host tasks, files in Program Files, or permissions.
 The two explicit Windows CI roundtrips must pass before release. Real UAC/logon
 and Explorer acceptance remain separately documented.
+
+## Native round-trip finding
+
+The first disposable Windows round-trip created tasks, then exposed raw account
+name versus SID comparison in ownership validation. Principal/trigger identities
+are now resolved to canonical SIDs while the exact Source marker remains
+mandatory; unknown identities fail closed. Read-only native identity fixtures
+and scoped review pass. The native round-trips must rerun after this fix.
+
+Network availability also uses frame freshness rather than a shared availability
+flag alone: collector expiration can run on a cloned sample. The read-only
+predicate and regression preserve unavailable state for old/missing frames.

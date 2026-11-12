@@ -425,7 +425,7 @@ impl ActivityApp {
         } else {
             let shared = self.network.shared();
             let state = shared.lock().unwrap_or_else(|error| error.into_inner());
-            let available = state.is_available;
+            let available = state.has_fresh_data(Duration::from_secs(7));
             let waiting = self.network_error.is_none()
                 && (state.status.contains("Ожидание") || state.status.contains("ожидание"))
                 && self.network_requested_at.is_some();
