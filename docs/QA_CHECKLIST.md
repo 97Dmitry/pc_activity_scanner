@@ -26,7 +26,7 @@ This project is not declared production-ready until the following pass on actual
 - [ ] With grouping enabled, search a child PID and a path shared by only one same-name process; only matching processes contribute to the result.
 - [ ] At 960×600, navigation and status stay visible; settings scroll; basic/detailed tables and context-menu copying work.
 - [ ] Empty search results explain how to reset filters; first startup and pause show clear status.
-- [ ] Sort all 10 columns ascending/descending; unknown metrics stay at the bottom.
+- [ ] Sort all 20 detailed columns ascending/descending; unknown metrics stay at the bottom.
 - [ ] Toggle filters and name grouping while processes enter/exit; no crash or flickering.
 - [ ] Change polling 1/2/5 seconds; reload persisted settings after restart.
 - [ ] Close-to-tray ON: window hides and sampling continues; restore menu reopens; Quit terminates.
@@ -66,7 +66,116 @@ This project is not declared production-ready until the following pass on actual
 - [ ] Windows: move portable EXE, re-query stale task, repair/downgrade/remove it; unrelated task collisions fail closed.
 - [ ] Windows: alternate UAC credentials do not change task principal; standard user cannot select automatic Highest.
 - [ ] Windows: inspect icon in Explorer/shortcut/taskbar/tray at 100/125/150/200% DPI, dark/light taskbar; no generic EXE icon.
-- [ ] Windows: unsupported GPU metrics continue showing `—`.
+- [ ] Windows: unsupported or missing GPU counters continue showing `—`; available PDH counters use the busiest engine and separate memory classes.
 - [ ] No outbound telemetry or background updates; no logs containing packet payloads or private window content.
 - [ ] All Actions jobs pass for each release SHA; binary artifacts download and launch.
 - [ ] Release uses a version tag matching Cargo.toml/Cargo.lock, includes both platform archives and standalone binaries with SHA256 checksums, and appears as Latest. Release notes disclose known limits and completed checks; code signing remains planned.
+
+## Clipboard
+
+- [ ] Windows/Linux: copy a process path and diagnostic report; paste into
+  another application and verify the exact text, including Cyrillic.
+- [ ] Select ordinary label text and press Ctrl+C; paste outside the app.
+- [ ] Paste external text into the process search field with Ctrl+V.
+
+## Windows virtual machines / WSL2
+
+- [ ] Without elevation, running WSL2 appears as WSL2 (vmmemWSL), with host
+  working-set RAM comparable to Get-Process and CPU responding to Linux load.
+- [ ] Sorting/filtering/grouping and history include one VM row, not duplicate
+  sysinfo/native rows. Other vmmem machines are not labelled WSL2.
+- [ ] VM start/exit, PID reuse, pause/resume and native query failure reset
+  CPU baselines; missing data do not silently become measured zeros.
+
+## Extended resources / stage 1
+
+- [ ] Compare process I/O with the same OS counter source, not physical disk
+  totals; Windows includes non-file I/O. First sample/reset/pause are unknown.
+- [ ] Compare separate device read/write and busy/idle with OS tools; do not
+  sum partition and whole-device activity or infer PID-to-disk attribution.
+- [ ] Sort process I/O both ways, inspect unknown group members, export live
+  rows and historical supplementary metrics with independent coverage.
+- [ ] Open a pre-extension history database through the application; previous
+  rows survive and new metrics stay absent in old intervals.
+
+## Extended resources / stage 2
+
+- [ ] On multi-GPU Windows, compare GPU% with the busiest engine, not sum of
+  engine percentages; compare reported dedicated/shared values separately.
+- [ ] Missing counter, protected PID, driver reset, process exit/reuse and
+  pause/resume yield unknowns; no stale GPU values or invented idle zeros.
+- [ ] Historical GPU% uses the maximum member, supplemental GPU memory keeps
+  independent coverage; verify CSV blanks for unavailable metrics.
+
+## Extended resources / stage 3
+
+- [ ] Group disclosure uses a drawn triangle (no missing-font square); clicking
+  either the triangle or name expands/collapses. Single processes have no square.
+- [ ] Expand/collapse a same-name group, sort members and search one PID/path;
+  group totals include only matching members. Unknown member stays unknown.
+- [ ] Switch to tree: equal names never imply parenthood. Exit/reuse a parent
+  PID; child becomes a root rather than attaching to a newer process.
+- [ ] A filtered-out parent is not inserted as an unmatched search result;
+  siblings respect the selected sort. Rapid repaint reuses the row cache.
+- [ ] CSV preserves visible hierarchy, row_kind and depth; summaries are
+  explicitly distinguishable from process rows. Export does not freeze UI.
+
+## Extended resources / stage 4
+
+- [ ] Compare same-source resident and private commit separately; shared pages
+  do not become unique physical totals. Do not label commit as actual swap.
+- [ ] First Windows VM sample already has measured RAM and unknown CPU; the
+  second gives normalized CPU. Other VMs retain their own names.
+- [ ] Protected/unavailable CPU/RAM render — and blank CSV; ascending and
+  descending sorts put unknowns last. Unknown group member preserves unknown.
+- [ ] Linux file/shmem RSS, VmSwap and minor/major fault rates preserve missing
+  fields; Windows page faults are explicitly combined.
+- [ ] Historical CPU/RAM coverage is independent; query/export and chart gaps
+  match. Existing schema3 databases migrate without losing old measurements.
+
+## Extended resources / stage 5
+
+- [ ] Select an individual process and open Connections: TCP/UDP, IPv4/IPv6,
+  addresses/ports and TCP state match OS ownership; Windows UDP remote is —.
+- [ ] Exit/reuse selected PID and switch selection rapidly: no previous
+  lifetime's rows survive; protected source reports unavailable/partial data.
+- [ ] Pause, close the connection window, resume; GUI remains responsive and
+  no reverse DNS or external requests occur. Large lists remain virtualized.
+- [ ] On Linux, a newly started process remains network-unknown until a whole
+  observed NetHogs frame belongs after its birth; session totals never inherit
+  the previous same-second PID lifetime.
+
+## Extended resources / stage 6
+
+- [ ] Logical processor count and changing values match the OS; compare the
+  displayed mean with host CPU and keep process CPU normalization unchanged.
+- [ ] Check a many-core host or synthetic vector: compact scrolling grid only
+  lays out visible rows, and first/pause/resume values are unknown, not zeros.
+
+## Extended resources / stage 7
+
+- [ ] Verify sensor/device label and units; an ACPI zone is never renamed CPU.
+  Unavailable/unsupported/analog-with-unknown-unit inputs remain unknown.
+- [ ] Compare NVIDIA temperature with the same native tool. Only explicit
+  thermal slowdown flags produce current thermal state; generic power-related
+  hw_slowdown, high temperature and low frequency never do.
+- [ ] Linux thermal counters deduplicate package/core aliases, start unknown,
+  reset on gaps/resets and show new transitions rather than current throttling.
+- [ ] Missing driver, stalled CLI or stale snapshot clears values; timeout,
+  cancellation, output limits and own-child cleanup remain off the GUI thread.
+
+
+## Extended resources / stage 8
+
+- [ ] Legacy/new settings leave rules and desktop delivery off. Configure one
+  rule, verify metric units, duration/cooldown and persistence after restart.
+- [ ] Confirm an event includes process/metric/threshold/interval without a
+  diagnosis. Growth without decrease resets after a drop and after an event.
+- [ ] Pause/resume, missing metrics, repeated snapshot, PID reuse and rapid
+  off/on between ticks never advance pending dwell. Same settings save keeps it.
+- [ ] In-app toast/journal works without a desktop service. Desktop queue is
+  bounded and shows errors/loss; disable cancels queued and active unaccepted jobs.
+  An already OS-accepted request may remain according to desktop policy.
+- [ ] Quit remains responsive while collector/delivery acknowledge shutdown;
+  owned notification icon/HWND are cleaned before normal close. Actual desktop
+  appearance, tray and clipboard remain manual acceptance checks.

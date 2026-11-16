@@ -10,6 +10,14 @@
   queues. Collector snapshots carry UTC time, contiguous duration and process
   lifetime identity; never record history only from GUI repainting. See
   `docs/HISTORY.md` and `docs/plans/ACTIVITY_HISTORY.md` for coverage semantics.
+- `process_details` and `windows_processes` own authoritative process lifetime,
+  CPU and memory availability. Windows uses a bounded native snapshot including
+  minimal VMs; Linux validates stat/status/exe/stat. Preserve first-sample RAM
+  with unknown CPU, exact lifetime and host-core normalization. Only vmmemWSL
+  is labelled WSL2; no elevation. Private commit, resident and swap differ.
+- `ProcessView` caches expanded name groups and separate parent trees. Parent
+  links require exact creation tokens; presentation rows never enter recording.
+  Expanded CSV includes group/process row_kind: never double-sum summaries.
 - Unknown per-process metrics use `None` / `—`; never infer them from global
   counters. NetHogs frames must be accounted once, including frames between
   slower UI collection ticks. Bound queues and history buffers.
@@ -36,7 +44,33 @@
   supported metrics. Virtual-display tests do not establish Windows/tray/Polkit
   acceptance. Version tags publish releases; normal main pushes do not. See
   `docs/RELEASING.md`; tags, Cargo versions and release notes must match.
+- Keep `eframe`'s `clipboard` feature enabled when disabling its default features.
+  Without it, Copy buttons and selected-text copying use an app-only fallback,
+  silently failing to reach the OS clipboard. Verify copying into another app.
 - Main is protected, including admins. Use PRs and both CI checks; never bypass
   protection or force-update published version tags.
 - Work in the current checkout. Do not commit, push or change repository
   protection without explicit authorization.
+- Linux GPU samples must carry native lifetime tokens; cached PID-only pmon
+  data cannot be assigned to a newer process. Driver failures clear cache.
+- `connections` owns bounded selected-lifetime socket queries off GUI. Keep
+  selection/result generation paired; no DNS, packet contents or inferred
+  connection byte counters. Linux inode ownership is checked around table reads.
+- Traffic totals use PID/UTC start/native token on both OSes. NetHogs remains
+  an estimate: birth must precede the entire actual frame, not just delayed
+  publication. Missing native identity is unknown; ETW requires exact wire token.
+- `thermal` samples named sources on its worker; ACPI zones are not CPU sensors.
+  Thermal transitions and current NVIDIA thermal flags have different meaning.
+  `command` bounds unprivileged CLI output/deadlines and owns child cleanup;
+  do not reintroduce blocking/unbounded Command::output in samplers.
+
+- `alerts` evaluates only collector snapshots. Preserve a settings revision so
+  off/on between ticks resets dwell; missing metrics and PID reuse never advance
+  a rule. Journal100/state32768/rules16 remain bounded. Desktop delivery has its
+  own bounded generation-checked worker; do not issue OS notifications from GUI.
+- Graceful quit signals collector/delivery and polls completion, never joins on
+  GUI. Preserve command parent-death ownership and the documented Windows birth
+  race rather than adding arbitrary privileged process management.
+- Draw process disclosure indicators with egui geometry, not Unicode arrow
+  characters: the bundled proportional font lacks those glyphs. Preserve the
+  shared triangle/name click target and text-only names in copy/export.

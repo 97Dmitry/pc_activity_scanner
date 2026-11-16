@@ -59,7 +59,7 @@ fn write_csv(mut output: impl Write, rows: &[ProcessRow]) -> Result<(), String> 
     let mut csv = csv::WriterBuilder::new()
         .delimiter(b';')
         .from_writer(output);
-    csv.write_record([
+    let mut headers = vec![
         "Название",
         "PID",
         "Количество процессов",
@@ -72,20 +72,32 @@ fn write_csv(mut output: impl Write, rows: &[ProcessRow]) -> Result<(), String> 
         "Отдача (байт/с)",
         "Загружено за сессию (байт)",
         "Отдано за сессию (байт)",
-    ])
-    .map_err(|e| e.to_string())?;
+    ];
+    let extra_headers =
+        crate::metrics::MetricKind::ALL.map(|kind| format!("{} ({})", kind.label(), kind.unit()));
+    headers.extend(extra_headers.iter().map(String::as_str));
+    headers.extend([
+        "row_kind",
+        "depth",
+        "parent_pid",
+        "parent_started_at",
+        "parent_lifetime",
+        "process_started_at",
+        "process_lifetime",
+    ]);
+    csv.write_record(headers).map_err(|e| e.to_string())?;
     for row in rows {
-        csv.write_record([
+        let mut record = vec![
             excel_safe(&row.name),
             row.pid.to_string(),
             row.count.to_string(),
             excel_safe(&row.executable),
-            format!("{:.2}", row.cpu_pct),
+            row.cpu_pct.map(|v| format!("{v:.2}")).unwrap_or_default(),
             row.gpu_pct.map(|v| format!("{v:.2}")).unwrap_or_default(),
             row.gpu_memory_bytes
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
-            row.ram_bytes.to_string(),
+            row.ram_bytes.map(|v| v.to_string()).unwrap_or_default(),
             row.down_bps.map(|v| format!("{v:.1}")).unwrap_or_default(),
             row.up_bps.map(|v| format!("{v:.1}")).unwrap_or_default(),
             row.downloaded_bytes
@@ -94,8 +106,36 @@ fn write_csv(mut output: impl Write, rows: &[ProcessRow]) -> Result<(), String> 
             row.uploaded_bytes
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
-        ])
-        .map_err(|e| e.to_string())?;
+        ];
+        record.extend(crate::metrics::MetricKind::ALL.map(|kind| {
+            row.metrics
+                .get(&kind)
+                .map(ToString::to_string)
+                .unwrap_or_default()
+        }));
+        record.extend([
+            if row.is_group {
+                "group".into()
+            } else {
+                "process".into()
+            },
+            row.view_depth.to_string(),
+            row.parent.map(|p| p.pid.to_string()).unwrap_or_default(),
+            row.parent
+                .map(|p| p.started_at.to_string())
+                .unwrap_or_default(),
+            row.parent
+                .and_then(|p| p.lifetime)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            if row.is_group {
+                String::new()
+            } else {
+                row.started_at.to_string()
+            },
+            row.lifetime.map(|v| v.to_string()).unwrap_or_default(),
+        ]);
+        csv.write_record(record).map_err(|e| e.to_string())?;
     }
     csv.flush().map_err(|e| e.to_string())
 }
@@ -103,6 +143,35 @@ fn write_csv(mut output: impl Write, rows: &[ProcessRow]) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hierarchy_csv_distinguishes_summary_and_members_and_preserves_order() {
+        let group = ProcessRow {
+            is_group: true,
+            count: 2,
+            name: "workers".into(),
+            ..Default::default()
+        };
+        let child = ProcessRow {
+            pid: 42,
+            view_depth: 1,
+            name: "workers".into(),
+            ..Default::default()
+        };
+        let mut bytes = Vec::new();
+        write_csv(&mut bytes, &[group, child]).unwrap();
+        let mut csv = csv::ReaderBuilder::new()
+            .delimiter(b';')
+            .from_reader(&bytes[3..]);
+        let headers = csv.headers().unwrap().clone();
+        let kind = headers.iter().position(|h| h == "row_kind").unwrap();
+        let depth = headers.iter().position(|h| h == "depth").unwrap();
+        let rows = csv.records().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(rows[0].get(kind), Some("group"));
+        assert_eq!(rows[1].get(kind), Some("process"));
+        assert_eq!(rows[1].get(depth), Some("1"));
+        assert_eq!(rows[1].get(1), Some("42"));
+    }
 
     #[test]
     fn export_roundtrip_preserves_order_and_escapes_formulas() {

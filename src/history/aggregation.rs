@@ -1,18 +1,45 @@
+use crate::metrics::{Measurements, MetricKind};
 use crate::model::{ProcessRow, Snapshot};
 use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Metric {
+    pub extra: BTreeMap<MetricKind, ExtraMetric>,
     pub seconds: f64,
     pub cpu_sum: f64,
+    pub cpu_seconds: f64,
     pub cpu_peak: f64,
     pub ram_sum: f64,
+    pub ram_seconds: f64,
     pub ram_peak: u64,
     pub gpu_sum: f64,
     pub gpu_seconds: f64,
     pub down: f64,
     pub up: f64,
     pub network_seconds: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct ExtraMetric {
+    pub sum: f64,
+    pub seconds: f64,
+    pub peak: f64,
+}
+#[derive(Clone, Debug, Default)]
+pub(super) struct DeviceMetric {
+    pub name: String,
+    pub extra: BTreeMap<MetricKind, ExtraMetric>,
+}
+fn observe_extra(to: &mut BTreeMap<MetricKind, ExtraMetric>, values: &Measurements, seconds: f64) {
+    for (&kind, &value) in values {
+        if !value.is_finite() || value < 0.0 {
+            continue;
+        }
+        let m = to.entry(kind).or_default();
+        m.sum += value * seconds;
+        m.seconds += seconds;
+        m.peak = m.peak.max(value);
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -31,12 +58,17 @@ pub(super) struct Bucket {
     pub ram_total: u64,
     pub system: Metric,
     pub applications: HashMap<String, AppMetric>,
+    pub devices: HashMap<String, DeviceMetric>,
 }
+
+type ProcessIdentity = (u32, u64, Option<u64>);
+type TrafficCounters = (Option<u64>, Option<u64>);
 
 #[derive(Default)]
 pub(super) struct Aggregator {
     buckets: BTreeMap<i64, Bucket>,
-    baselines: HashMap<(u32, u64), (Option<u64>, Option<u64>)>,
+    baselines: HashMap<ProcessIdentity, TrafficCounters>,
+    devices: std::collections::HashSet<String>,
     last_timestamp: Option<i64>,
     timeline_end: Option<f64>,
     high_water: Option<f64>,
@@ -81,9 +113,13 @@ impl Aggregator {
         });
         let contiguous = contiguous && !overlapping;
         let previous = std::mem::take(&mut self.baselines);
+        let previous_devices = std::mem::replace(
+            &mut self.devices,
+            sample.devices.iter().map(|d| d.id.clone()).collect(),
+        );
         let mut groups: HashMap<String, Observation> = HashMap::new();
         for row in &sample.process_rows {
-            let identity = (row.pid, row.started_at);
+            let identity = (row.pid, row.started_at, row.lifetime);
             self.baselines
                 .insert(identity, (row.downloaded_bytes, row.uploaded_bytes));
             if !contiguous {
@@ -100,16 +136,44 @@ impl Aggregator {
                 .or_insert_with(|| Observation {
                     name: row.name.clone(),
                     executable: row.executable.clone(),
+                    cpu: Some(0.0),
+                    ram: Some(0),
                     gpu: Some(0.0),
                     network: Some((0.0, 0.0)),
-                    ..Default::default()
+                    extra: if previous.contains_key(&identity) {
+                        row.metrics.clone()
+                    } else {
+                        Default::default()
+                    },
+                    first_extra: true,
                 });
-            group.cpu += finite(row.cpu_pct as f64);
-            group.ram = group.ram.saturating_add(row.ram_bytes);
+            if group.first_extra {
+                group.first_extra = false;
+            } else {
+                group.extra.retain(|kind, total| {
+                    previous.contains_key(&identity)
+                        && row.metrics.get(kind).is_some_and(|value| {
+                            if value.is_finite() && *value >= 0.0 {
+                                *total += value;
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                });
+            }
+            group.cpu = group
+                .cpu
+                .zip(row.cpu_pct.filter(|v| v.is_finite() && *v >= 0.0))
+                .map(|(sum, value)| sum + value as f64);
+            group.ram = group
+                .ram
+                .zip(row.ram_bytes)
+                .map(|(sum, value)| sum.saturating_add(value));
             group.gpu = group
                 .gpu
                 .zip(row.gpu_pct)
-                .map(|(sum, value)| sum + finite(value as f64));
+                .map(|(maximum, value)| maximum.max(finite(value as f64)));
             group.network = group
                 .network
                 .zip(delta)
@@ -120,8 +184,11 @@ impl Aggregator {
         }
         self.high_water = Some(end);
         let system = Observation {
-            cpu: finite(sample.cpu_pct as f64),
-            ram: sample.ram_used,
+            cpu: sample
+                .cpu_pct
+                .is_finite()
+                .then_some(sample.cpu_pct.max(0.0) as f64),
+            ram: Some(sample.ram_used),
             network: (sample.interface_count > 0).then_some((
                 finite(sample.down_bps) * seconds,
                 finite(sample.up_bps) * seconds,
@@ -157,6 +224,16 @@ impl Aggregator {
                 app.last_seen = sample.sampled_at;
                 app.metric.observe(value, duration, seconds);
             }
+            for device in sample
+                .devices
+                .iter()
+                .take(256)
+                .filter(|d| previous_devices.contains(&d.id))
+            {
+                let target = bucket.devices.entry(device.id.clone()).or_default();
+                target.name.clone_from(&device.name);
+                observe_extra(&mut target.extra, &device.metrics, duration);
+            }
             start = stop;
         }
         false
@@ -166,6 +243,7 @@ impl Aggregator {
     }
     pub fn break_continuity(&mut self) {
         self.baselines.clear();
+        self.devices.clear();
         self.last_timestamp = None;
         self.timeline_end = None;
     }
@@ -176,20 +254,29 @@ impl Aggregator {
 
 #[derive(Default)]
 struct Observation {
+    extra: Measurements,
+    first_extra: bool,
     name: String,
     executable: String,
-    cpu: f64,
-    ram: u64,
+    cpu: Option<f64>,
+    ram: Option<u64>,
     gpu: Option<f64>,
     network: Option<(f64, f64)>,
 }
 impl Metric {
     fn observe(&mut self, value: &Observation, seconds: f64, sample_seconds: f64) {
         self.seconds += seconds;
-        self.cpu_sum += value.cpu * seconds;
-        self.cpu_peak = self.cpu_peak.max(value.cpu);
-        self.ram_sum += value.ram as f64 * seconds;
-        self.ram_peak = self.ram_peak.max(value.ram);
+        observe_extra(&mut self.extra, &value.extra, seconds);
+        if let Some(cpu) = value.cpu {
+            self.cpu_sum += cpu * seconds;
+            self.cpu_seconds += seconds;
+            self.cpu_peak = self.cpu_peak.max(cpu);
+        }
+        if let Some(ram) = value.ram {
+            self.ram_sum += ram as f64 * seconds;
+            self.ram_seconds += seconds;
+            self.ram_peak = self.ram_peak.max(ram);
+        }
         if let Some(gpu) = value.gpu {
             self.gpu_sum += gpu * seconds;
             self.gpu_seconds += seconds;
@@ -236,8 +323,8 @@ mod tests {
             started_at,
             name: "worker".into(),
             executable: path.into(),
-            cpu_pct: cpu,
-            ram_bytes: ram,
+            cpu_pct: Some(cpu),
+            ram_bytes: Some(ram),
             downloaded_bytes: total,
             uploaded_bytes: total,
             ..Default::default()
@@ -254,6 +341,87 @@ mod tests {
             interface_count: 1,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn supplementary_metrics_require_complete_groups_and_exact_lifetimes() {
+        use crate::metrics::MetricKind;
+        let mut a = Aggregator::default();
+        let mut row = process(1, 1, "/a", 1.0, 1, None);
+        row.lifetime = Some(101);
+        row.metrics.insert(MetricKind::IoRead, 10.0);
+        a.record(&sample(0, 0.0, vec![row.clone()]));
+        a.record(&sample(2, 2.0, vec![row.clone()]));
+        // Same PID and Unix second, different exact native identity.
+        row.lifetime = Some(102);
+        row.metrics.insert(MetricKind::IoRead, 900.0);
+        a.record(&sample(3, 1.0, vec![row.clone()]));
+        row.metrics.insert(MetricKind::IoRead, 20.0);
+        a.record(&sample(4, 1.0, vec![row.clone()]));
+        let mut unknown = process(2, 1, "/a", 1.0, 1, None);
+        unknown.lifetime = Some(201);
+        a.record(&sample(5, 1.0, vec![row, unknown]));
+        let buckets = a.take();
+        let m = &buckets[0]
+            .applications
+            .values()
+            .next()
+            .unwrap()
+            .metric
+            .extra[&MetricKind::IoRead];
+        assert_eq!(m.seconds, 3.0);
+        assert_eq!(m.sum, 40.0);
+        assert_eq!(m.peak, 20.0);
+    }
+
+    #[test]
+    fn device_metrics_split_buckets_without_reintegrating_or_bridging_pause() {
+        use crate::metrics::{DeviceRow, MetricKind};
+        let mut a = Aggregator::default();
+        let mut first = sample(29, 0.0, vec![]);
+        first.devices.push(DeviceRow {
+            id: "disk0".into(),
+            name: "disk".into(),
+            metrics: [(MetricKind::IoWrite, 100.0)].into(),
+        });
+        a.record(&first);
+        let mut next = first.clone();
+        next.sampled_at = 33;
+        next.sample_seconds = 4.0;
+        a.record(&next);
+        next.sampled_at = 40;
+        next.sample_seconds = 0.0;
+        a.record(&next);
+        let buckets = a.take();
+        assert_eq!(buckets.len(), 2);
+        let sum: f64 = buckets
+            .iter()
+            .map(|b| b.devices["disk0"].extra[&MetricKind::IoWrite].sum)
+            .sum();
+        assert_eq!(sum, 400.0);
+    }
+
+    #[test]
+    fn cpu_and_ram_have_independent_complete_group_coverage() {
+        let mut a = Aggregator::default();
+        a.record(&sample(0, 0.0, vec![]));
+        let mut first = process(1, 1, "/a", 10.0, 100, None);
+        let mut second = process(2, 1, "/a", 20.0, 200, None);
+        second.cpu_pct = None;
+        a.record(&sample(2, 2.0, vec![first.clone(), second.clone()]));
+        first.ram_bytes = None;
+        second.cpu_pct = Some(20.0);
+        a.record(&sample(3, 1.0, vec![first.clone(), second.clone()]));
+        first.cpu_pct = None;
+        second.ram_bytes = None;
+        a.record(&sample(4, 1.0, vec![first, second]));
+        let buckets = a.take();
+        let m = &buckets[0].applications.values().next().unwrap().metric;
+        assert_eq!(m.seconds, 4.0);
+        assert_eq!(m.cpu_seconds, 1.0);
+        assert_eq!(m.cpu_sum, 30.0);
+        assert_eq!(m.ram_seconds, 2.0);
+        assert_eq!(m.ram_sum, 600.0);
     }
 
     #[test]
@@ -365,6 +533,21 @@ mod tests {
         );
         assert!((buckets.iter().map(|b| b.system.seconds).sum::<f64>() - 110.0).abs() < 0.00001);
     }
+    #[test]
+    fn gpu_application_percentage_is_maximum_member_not_engine_sum() {
+        let mut a = Aggregator::default();
+        let mut first = process(1, 1, "/a", 1.0, 10, None);
+        first.gpu_pct = Some(80.0);
+        let mut second = process(2, 1, "/a", 1.0, 10, None);
+        second.gpu_pct = Some(70.0);
+        a.record(&sample(0, 0.0, vec![first.clone(), second.clone()]));
+        a.record(&sample(2, 2.0, vec![first, second]));
+        let buckets = a.take();
+        let metric = &buckets[0].applications.values().next().unwrap().metric;
+        assert_eq!(metric.gpu_seconds, 2.0);
+        assert_eq!(metric.gpu_sum / metric.gpu_seconds, 80.0);
+    }
+
     #[test]
     fn partially_unknown_instance_metrics_are_not_reported_as_complete_application_usage() {
         let mut a = Aggregator::default();

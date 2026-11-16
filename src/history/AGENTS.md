@@ -19,3 +19,12 @@
   defer them within a bounded queue and replay after applying the command.
 - `seed_history_fixture` is an ignored application-code test; the explicit
   `PC_ACTIVITY_HISTORY_FIXTURE` path receives synthetic data for GUI acceptance.
+- Schema v3 `extra_metrics` stores supplementary measurements with independent
+  duration/weighted sums/peaks; old buckets have no invented coverage. Keep
+  retention, clear and partial-flush transactions consistent with base buckets.
+  Rate integrals are bytes only for I/O; memory integrals are byte-seconds.
+- Native process creation tokens join PID and UTC start in recorder baselines;
+  absent/changed lifetimes cannot contribute an initial supplementary interval.
+- Schema v4 adds independent CPU/RAM coverage. Presence duration must not become
+  CPU/RAM coverage when any grouped process is unknown. Legacy rows inherit their
+  old presence coverage because earlier false zeros cannot be reconstructed.

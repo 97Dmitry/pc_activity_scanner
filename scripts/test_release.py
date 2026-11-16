@@ -53,6 +53,9 @@ class ReleaseTests(unittest.TestCase):
         with zipfile.ZipFile(output / "pc-activity-scanner-v0.2.0-windows-x86_64.zip") as archive:
             prefix = "pc-activity-scanner-v0.2.0-windows-x86_64/"
             self.assertEqual(archive.read(prefix + "pc_activity_scanner.exe"), b"windows binary")
+            self.assertEqual(set(archive.namelist()), {prefix + name for name in (
+                "pc_activity_scanner.exe", "README.md", "LICENSE", "RELEASE_NOTES.md"
+            )})
             self.assertEqual(archive.read(prefix + "LICENSE"), b"MIT")
             self.assertIn("Инструкция", archive.read(prefix + "README.md").decode("utf-8"))
         with tarfile.open(output / "pc-activity-scanner-v0.2.0-linux-x86_64.tar.gz") as archive:
@@ -61,6 +64,9 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(binary.mode & 0o777, 0o755)
             self.assertEqual(archive.extractfile(binary).read(), b"linux binary")
             self.assertEqual(archive.extractfile(prefix + "LICENSE").read(), b"MIT")
+            self.assertEqual(set(archive.getnames()), {prefix.rstrip("/")} | {
+                prefix + name for name in ("pc-activity-scanner", "README.md", "LICENSE", "RELEASE_NOTES.md")
+            })
         manifest = (output / "SHA256SUMS.txt").read_text().splitlines()
         self.assertEqual(len(manifest), 4)
         for line in manifest:

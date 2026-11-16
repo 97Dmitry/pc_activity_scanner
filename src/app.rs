@@ -2,7 +2,7 @@
 use crate::collector::Collector;
 use crate::export::export_csv;
 use crate::history::{HistoryService, types::HistoryConfig};
-use crate::model::{Filters, ProcessView, Snapshot, SortOrder};
+use crate::model::{Filters, ProcessIdentity, ProcessView, Snapshot, SortOrder};
 use crate::network::NetworkBackend;
 use crate::settings::Settings;
 use crate::tray::{Tray, TrayAction};
@@ -50,6 +50,11 @@ pub struct ActivityApp {
     settings: Settings,
     filters: Filters,
     process_view: ProcessView,
+    connections: crate::connections::Connections,
+    connections_open: bool,
+    alerts_open: bool,
+    last_alert_id: Option<u64>,
+    alert_toast: Option<(Instant, crate::alerts::AlertEvent)>,
     sort: SortOrder,
     screen: Screen,
     collector: Collector,
@@ -70,10 +75,12 @@ pub struct ActivityApp {
     tray: Option<Tray>,
     tray_error: Option<String>,
     exiting: bool,
+    exit_requested_at: Option<Instant>,
     paused: bool,
-    selected_pid: Option<u32>,
+    selected_process: Option<ProcessIdentity>,
     detailed_metrics: bool,
     feedback: String,
+    process_export: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
     last_action_error: Option<String>,
     diagnostics_open: bool,
     network_error: Option<String>,
@@ -105,6 +112,7 @@ impl ActivityApp {
             settings.poll_interval_ms,
             network.shared(),
             history_service.recorder(),
+            settings.alerts.clone(),
         );
         let (tray, tray_error) = match Tray::new() {
             Ok(tray) => (Some(tray), None),
@@ -141,6 +149,11 @@ impl ActivityApp {
             settings,
             filters: Filters::default(),
             process_view: ProcessView::default(),
+            connections: crate::connections::Connections::default(),
+            connections_open: false,
+            alerts_open: false,
+            last_alert_id: None,
+            alert_toast: None,
             sort: SortOrder::default(),
             screen: Screen::Overview,
             collector,
@@ -151,10 +164,12 @@ impl ActivityApp {
             tray,
             tray_error,
             exiting: false,
+            exit_requested_at: None,
             paused: false,
-            selected_pid: None,
+            selected_process: None,
             detailed_metrics: false,
             feedback,
+            process_export: None,
             last_action_error: None,
             diagnostics_open: false,
             network_error,
@@ -168,6 +183,8 @@ impl ActivityApp {
     fn save_settings(&mut self) {
         self.settings = self.settings.clone().validated();
         self.collector.set_interval(self.settings.poll_interval_ms);
+        self.collector
+            .set_alert_config(self.settings.alerts.clone());
         if !self.history_service.configure(HistoryConfig {
             enabled: self.settings.history_enabled,
             retention_days: self.settings.history_retention_days,
@@ -178,6 +195,29 @@ impl ActivityApp {
         if let Err(error) = self.settings.save() {
             self.last_action_error = Some(format!("Saving settings: {error}"));
             self.feedback = "Не удалось сохранить настройки. Проверьте доступ к папке настроек и повторите изменение.".into();
+        }
+    }
+
+    fn poll_process_export(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let Some(rx) = &self.process_export else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("Export worker disconnected".into()),
+        };
+        self.process_export = None;
+        match result {
+            Ok(path) => {
+                self.last_action_error = None;
+                self.feedback = format!("Таблица сохранена: {}", path.display());
+            }
+            Err(error) => {
+                self.last_action_error = Some(error);
+                self.feedback = "Не удалось сохранить CSV. Подробности в диагностике.".into();
+            }
         }
     }
 
@@ -195,19 +235,42 @@ impl ActivityApp {
     }
 
     fn quit(&mut self, ctx: &egui::Context) {
-        self.exiting = true;
+        if !self.exiting {
+            self.exiting = true;
+            self.exit_requested_at = Some(Instant::now());
+            self.alert_toast = None;
+            self.connections.select(None);
+            self.collector.shutdown();
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        ctx.request_repaint_after(Duration::from_millis(50));
+    }
+
+    fn shutdown_ready(&self) -> bool {
+        self.collector.is_stopped()
+            || self
+                .exit_requested_at
+                .is_some_and(|at| at.elapsed() >= Duration::from_secs(2))
     }
 
     fn handle_close(&mut self, ctx: &egui::Context) {
-        if ctx.input(|input| input.viewport().close_requested())
-            && self.settings.close_to_tray
-            && self.tray.is_some()
-            && !self.exiting
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        if ctx.input(|input| input.viewport().close_requested()) {
+            if self.settings.close_to_tray && self.tray.is_some() && !self.exiting {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            } else {
+                self.quit(ctx);
+                if !self.shutdown_ready() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                }
+            }
+        }
+        if self.exiting {
+            if self.shutdown_ready() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
         }
     }
 
@@ -267,6 +330,9 @@ impl ActivityApp {
                 {
                     self.paused = !self.paused;
                     self.collector.set_paused(self.paused);
+                    if self.paused {
+                        self.alert_toast = None;
+                    }
                 }
                 ui.label(
                     egui::RichText::new(format!(
@@ -285,6 +351,16 @@ impl ActivityApp {
             ui.selectable_value(&mut self.screen, Screen::Compare, "Сравнение");
             ui.selectable_value(&mut self.screen, Screen::Settings, "Настройки");
             ui.separator();
+            let count = self
+                .collector
+                .alerts
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .events
+                .len();
+            if ui.button(format!("События ({count})")).clicked() {
+                self.alerts_open = true;
+            }
             ui.label(
                 egui::RichText::new("Локальный монитор ресурсов")
                     .small()
@@ -377,7 +453,11 @@ impl ActivityApp {
             );
             ui.checkbox(&mut self.filters.only_active, "Только активные");
             ui.checkbox(&mut self.filters.only_network, "С трафиком");
-            ui.checkbox(&mut self.filters.group_by_name, "Группировать по имени");
+            ui.checkbox(&mut self.filters.tree, "Дерево процессов");
+            ui.add_enabled(
+                !self.filters.tree,
+                egui::Checkbox::new(&mut self.filters.group_by_name, "Группировать по имени"),
+            );
             if ui.button("Сбросить").clicked() {
                 self.filters = Filters::default();
             }
@@ -399,7 +479,7 @@ impl ActivityApp {
                     .speed(10),
             );
             ui.add_space(16.0);
-            ui.checkbox(&mut self.detailed_metrics, "GPU и итоги трафика");
+            ui.checkbox(&mut self.detailed_metrics, "Подробные метрики");
         });
         ui.add_space(6.0);
     }
@@ -587,8 +667,157 @@ impl ActivityApp {
         });
     }
 
+    fn alert_settings(&mut self, ui: &mut egui::Ui) {
+        use crate::alerts::{AlertMetric, AlertRule};
+        let previous = self.settings.alerts.clone();
+        let mut show_journal = false;
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.heading("Уведомления о длительной нагрузке");
+            let config = &mut self.settings.alerts;
+            ui.checkbox(&mut config.enabled, "Включить правила уведомлений");
+            ui.add_enabled(config.enabled, egui::Checkbox::new(&mut config.desktop, "Системные уведомления рабочего стола"));
+            ui.small("Правила по процессам проверяют каждый отдельный PID и время жизни, независимо от поиска/группировки. 100% CPU — мощность всего хоста.");
+            let mut remove = None;
+            for (index, rule) in config.rules.iter_mut().enumerate() {
+                ui.push_id(("alert-rule",index), |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.checkbox(&mut rule.enabled, format!("Правило {}", index+1));
+                        let old_metric = rule.metric;
+                        egui::ComboBox::from_id_salt("metric").selected_text(rule.metric.label()).show_ui(ui, |ui| {
+                            for metric in AlertMetric::ALL { ui.selectable_value(&mut rule.metric, metric, metric.label()); }
+                        });
+                        if old_metric != rule.metric { rule.threshold = match rule.metric {
+                            AlertMetric::SystemCpu | AlertMetric::ProcessCpu | AlertMetric::Gpu => 90.0,
+                            AlertMetric::ResidentGrowth => 256.0*1024.0*1024.0,
+                            AlertMetric::IoRead | AlertMetric::IoWrite => 10.0*1024.0*1024.0,
+                            _ => 2.0*1024.0*1024.0*1024.0,
+                        }; }
+                        if ui.small_button("Удалить").clicked() { remove = Some(index); }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Порог");
+                        let percent = rule.metric.unit() == "%";
+                        let scale = if percent { 1.0 } else { 1024.0*1024.0 };
+                        let mut shown = rule.threshold/scale;
+                        let suffix = match rule.metric.unit() { "%" => " %", "bytes/s" => " МиБ/с", _ => " МиБ" };
+                        if ui.add(egui::DragValue::new(&mut shown).range(0.1..=if percent {100.0} else {1_000_000_000.0}).suffix(suffix).speed(if percent {0.5} else {1.0})).changed() { rule.threshold = shown*scale; }
+                        ui.label("Длительность"); ui.add(egui::DragValue::new(&mut rule.duration_secs).range(1..=3600).suffix(" с"));
+                        ui.label("Повтор не чаще"); ui.add(egui::DragValue::new(&mut rule.cooldown_secs).range(1..=86400).suffix(" с"));
+                    });
+                    if rule.metric == AlertMetric::ResidentGrowth { ui.small("Рост resident без снижения: равные значения допускаются; снижение начинает новый интервал. После события нужен новый рост."); }
+                    if matches!(rule.metric, AlertMetric::IoRead | AlertMetric::IoWrite) { ui.small("Windows I/O включает file/network/device, а не физический трафик конкретного накопителя."); }
+                    ui.separator();
+                });
+            }
+            if let Some(index) = remove { config.rules.remove(index); }
+            ui.horizontal(|ui| {
+                if ui.add_enabled(config.rules.len()<16, egui::Button::new("Добавить правило")).clicked() { config.rules.push(AlertRule::default()); }
+                if ui.button("Журнал событий").clicked() { show_journal = true; }
+            });
+            ui.small("Паузы, пропуски и неизвестные данные прерывают подтверждение. Событие сообщает измерение и интервал, а не доказанную причину тормозов.");
+        });
+        if self.settings.alerts != previous {
+            self.save_settings();
+        }
+        if show_journal {
+            self.alerts_open = true;
+        }
+        let report = self
+            .collector
+            .alerts
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        ui.label(if self.settings.alerts.enabled {
+            report.status.as_str()
+        } else {
+            "Правила выключены"
+        });
+        let delivery = self.collector.notification_status();
+        ui.small(format!(
+            "Рабочий стол: принято службой {}, пропущено {}",
+            delivery.accepted, delivery.dropped
+        ));
+        if let Some(error) = delivery.error {
+            ui.label(format!(
+                "Системное уведомление недоступно: {error}. События остаются в журнале."
+            ));
+        }
+    }
+
+    fn alert_windows(&mut self, ctx: &egui::Context) {
+        let report = self
+            .collector
+            .alerts
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(event) = report.events.last()
+            && self.last_alert_id != Some(event.id)
+        {
+            self.last_alert_id = Some(event.id);
+            if self.settings.alerts.enabled && !self.paused {
+                self.alert_toast = Some((Instant::now(), event.clone()));
+            }
+        }
+        let mut show_journal = false;
+        let mut dismiss = false;
+        if let Some((at, event)) = &self.alert_toast
+            && at.elapsed() < Duration::from_secs(8)
+            && !self.paused
+        {
+            egui::Area::new(egui::Id::unique("resource-alert-toast"))
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-15.0, -50.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::window(ui.style()).show(ui, |ui| {
+                        ui.set_max_width(480.0);
+                        ui.strong(event.title());
+                        ui.label(event.body());
+                        ui.horizontal(|ui| {
+                            if ui.button("Журнал").clicked() {
+                                show_journal = true;
+                            }
+                            if ui.small_button("Закрыть").clicked() {
+                                dismiss = true;
+                            }
+                        });
+                    });
+                });
+        }
+        if dismiss
+            || self
+                .alert_toast
+                .as_ref()
+                .is_some_and(|(at, _)| at.elapsed() >= Duration::from_secs(8))
+        {
+            self.alert_toast = None;
+        }
+        if show_journal {
+            self.alerts_open = true;
+        }
+        egui::Window::new("События нагрузки").open(&mut self.alerts_open).default_width(760.0).default_height(420.0).show(ctx, |ui| {
+            ui.small("Последние 100 событий текущего сеанса. Настройки правил — на вкладке «Настройки». Содержимое журнала не записывается в SQLite.");
+            ui.label(&report.status);
+            if report.events.is_empty() { ui.label("Событий пока нет. Уведомления по умолчанию выключены."); }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for event in report.events.iter().rev() {
+                    let local = |stamp| chrono::DateTime::from_timestamp(stamp,0).map(|t| t.with_timezone(&chrono::Local).format("%d.%m %H:%M:%S").to_string()).unwrap_or_else(|| stamp.to_string());
+                    egui::CollapsingHeader::new(format!("{} · {} · {}", local(event.ended_at), event.name, event.metric.label())).id_salt(event.id).show(ui, |ui| {
+                        ui.label(event.body());
+                        ui.label(format!("Интервал {} — {} ({:.1} с)", local(event.started_at), local(event.ended_at), event.duration_secs));
+                        ui.small(format!("Правило {}; порог {}",event.rule_index+1,event.metric.format(event.threshold)));
+                        if let Some(process) = event.process { ui.label(format!("PID {}, запуск {}", process.pid, local(process.started_at as i64))); }
+                    });
+                }
+            });
+        });
+    }
+
     fn settings_screen(&mut self, ui: &mut egui::Ui) {
         ui.heading("Настройки");
+        self.alert_settings(ui);
         ui.add_space(8.0);
         ui.group(|ui| {
             ui.set_min_width(ui.available_width());
@@ -768,59 +997,118 @@ impl ActivityApp {
             });
     }
 
+    fn connection_window(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        let selected = self.selected_process.filter(|identity| {
+            snapshot
+                .process_rows
+                .iter()
+                .any(|row| row.identity() == *identity)
+        });
+        self.connections
+            .select(if self.connections_open && !self.paused {
+                selected
+            } else {
+                None
+            });
+        if !self.connections_open {
+            return;
+        }
+        let view = self.connections.view();
+        egui::Window::new("Соединения выбранного процесса")
+            .id(egui::Id::unique("process-connections"))
+            .open(&mut self.connections_open)
+            .default_width(820.0).default_height(320.0)
+            .show(ctx, |ui| {
+                let Some(identity) = selected else { ui.label("Выберите отдельный процесс на вкладке «Процессы». Завершённый процесс не заменяется новым с тем же PID."); return; };
+                ui.strong(format!("PID {} · начало {}", identity.pid, identity.started_at));
+                ui.small("TCP/UDP, IPv4/IPv6. Без DNS, содержимого пакетов и неподтверждённых скоростей соединений.");
+                if self.paused { ui.label("Пауза: соединения не обновляются."); return; }
+                if view.identity != Some(identity) { ui.spinner(); return; }
+                ui.label(&view.status);
+                if view.updated_at.is_none_or(|at| at.elapsed() > Duration::from_secs(7)) {
+                    ui.label("Ожидаем свежий результат."); return;
+                }
+                use egui_extras::{Column, TableBuilder};
+                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    ui.set_min_width(720.0);
+                    TableBuilder::new(ui).id_salt("connection-table").striped(true)
+                        .column(Column::initial(70.0)).column(Column::remainder()).column(Column::remainder()).column(Column::initial(130.0))
+                        .header(26.0, |mut header| { for title in ["Протокол", "Локальный адрес", "Удалённый адрес", "TCP состояние"] { header.col(|ui| { ui.strong(title); }); } })
+                        .body(|body| body.rows(25.0, view.rows.len(), |mut row| {
+                            let connection = &view.rows[row.index()];
+                            for text in [connection.protocol.as_str(), &connection.local, connection.remote.as_deref().unwrap_or("—"), connection.state.as_deref().unwrap_or("—")] {
+                                row.col(|ui| { ui.add(egui::Label::new(text).truncate()).on_hover_text(text); });
+                            }
+                        }));
+                });
+            });
+        if !self.connections_open {
+            self.connections.select(None);
+        }
+    }
+
     fn process_screen(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
         ui::summary(ui, snapshot, &self.history);
         self.network_controls(ui, false);
         self.filters(ui);
+        if self.filters.tree {
+            ui.small("Дерево родства. Поиск и пороги отбирают процессы; скрытый или завершившийся родитель не добавляется.");
+        } else if self.filters.group_by_name {
+            ui.small("Нажмите группу для раскрытия. Поиск отбирает участников; пороги относятся к сводке группы.");
+        }
+        if !snapshot.process_status.is_empty() {
+            ui.label(&snapshot.process_status);
+        }
         let rows = self.process_view.rows(snapshot, &self.filters, self.sort);
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new(format!(
                     "{}: {} / {} процессов",
-                    if self.filters.group_by_name {
-                        "Групп"
-                    } else {
-                        "Показано"
-                    },
+                    "Показано строк",
                     rows.len(),
                     snapshot.process_rows.len()
                 ))
                 .color(MUTED),
             );
             if ui
-                .add_enabled(!rows.is_empty(), egui::Button::new("Экспорт CSV"))
+                .add_enabled(!rows.is_empty() && self.process_export.is_none(), egui::Button::new(if self.process_export.is_some() { "Сохранение…" } else { "Экспорт CSV" }))
+                .on_hover_text("Видимые строки. В раскрытых группах row_kind=group — сводка, row_kind=process — участник; не складывайте сводку с участниками.")
                 .clicked()
             {
-                self.feedback = match export_csv(&rows) {
-                    Ok(path) => {
-                        self.last_action_error = None;
-                        format!("Таблица сохранена: {}", path.display())
-                    }
-                    Err(error) => {
-                        self.last_action_error = Some(format!("Exporting process CSV: {error}"));
-                        "Не удалось сохранить CSV. Проверьте доступ к папке и повторите экспорт."
-                            .into()
-                    }
-                };
+                let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                let export_rows = Arc::clone(&rows);
+                std::thread::spawn(move || { let _ = tx.send(export_csv(&export_rows)); });
+                self.process_export = Some(rx);
             }
             if ui.small_button("Диагностика").clicked() {
                 self.diagnostics_open = true;
             }
         });
-        if let Some(selected) = self.selected_pid {
-            if let Some(row) = snapshot.process_rows.iter().find(|r| r.pid == selected) {
+        if let Some(selected) = self.selected_process {
+            if let Some(row) = snapshot
+                .process_rows
+                .iter()
+                .find(|r| r.identity() == selected)
+            {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!("PID {}: {}", row.pid, row.name));
+                    ui.label(row.parent.map_or_else(
+                        || "Родитель: неизвестен / завершён".into(),
+                        |parent| format!("Родитель PID {}", parent.pid),
+                    ));
                     if !row.executable.is_empty() && ui.small_button("Копировать путь").clicked()
                     {
                         ui.ctx().copy_text(row.executable.clone());
                     }
+                    if ui.button("Соединения").clicked() {
+                        self.connections_open = true;
+                    }
                     if ui.small_button("Снять выделение").clicked() {
-                        self.selected_pid = None;
+                        self.selected_process = None;
                     }
                 });
             } else {
-                self.selected_pid = None;
+                self.selected_process = None;
             }
         }
         ui.add_space(4.0);
@@ -839,8 +1127,9 @@ impl ActivityApp {
                 ui,
                 &rows,
                 &mut self.sort,
-                &mut self.selected_pid,
+                &mut self.selected_process,
                 self.detailed_metrics,
+                &mut self.process_view,
             );
         }
     }
@@ -853,6 +1142,7 @@ impl eframe::App for ActivityApp {
         }
         #[cfg(target_os = "windows")]
         self.poll_startup();
+        self.poll_process_export();
         self.handle_tray(ctx);
         self.handle_close(ctx);
     }
@@ -864,6 +1154,14 @@ impl eframe::App for ActivityApp {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        if self.exiting {
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.spinner();
+                ui.label("Завершаем сбор и доставку уведомлений…");
+            });
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+            return;
+        }
         self.observe(&snap);
         if std::mem::take(&mut self.history_ui.diagnostics_requested) {
             self.diagnostics_open = true;
@@ -908,6 +1206,8 @@ impl eframe::App for ActivityApp {
                 egui::ScrollArea::vertical().show(ui, |ui| self.settings_screen(ui));
             }
         });
+        self.connection_window(ui.ctx(), &snap);
+        self.alert_windows(ui.ctx());
     }
 }
 

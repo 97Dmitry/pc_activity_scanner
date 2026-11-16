@@ -82,8 +82,10 @@ fn file(dir: &Path, name: &str) -> Result<std::fs::File, String> {
 }
 fn write_reports(dir: &Path, query: &HistoryQuery, view: &HistoryView) -> Result<(), String> {
     write_summary(file(dir, "application-summary.csv")?, query, view)?;
+    write_supplementary(file(dir, "supplementary-summary.csv")?, query, view, false)?;
     write_points(file(dir, "system-series.csv")?, query, view, false)?;
     if !view.data.series.is_empty() {
+        write_supplementary(file(dir, "supplementary-series.csv")?, query, view, true)?;
         write_points(
             file(dir, "selected-application-series.csv")?,
             query,
@@ -92,6 +94,104 @@ fn write_reports(dir: &Path, query: &HistoryQuery, view: &HistoryView) -> Result
         )?;
     }
     Ok(())
+}
+fn write_supplementary(
+    output: impl Write,
+    query: &HistoryQuery,
+    view: &HistoryView,
+    series: bool,
+) -> Result<(), String> {
+    use crate::metrics::MetricKind;
+    let mut csv = writer(output)?;
+    csv.write_record([
+        "window_from_utc_seconds",
+        "window_to_utc_seconds",
+        "scope",
+        "application_id",
+        "device_id",
+        "name",
+        "timestamp_utc_seconds",
+        "metric",
+        "unit",
+        "average",
+        "peak",
+        "observed_seconds",
+        "integral_value_seconds",
+        "total_bytes",
+    ])
+    .map_err(|e| e.to_string())?;
+    let mut row = |scope: &str,
+                   app: String,
+                   device: &str,
+                   name: &str,
+                   timestamp: String,
+                   values: &std::collections::BTreeMap<
+        MetricKind,
+        crate::history::types::HistoricalMetric,
+    >|
+     -> Result<(), String> {
+        for kind in MetricKind::ALL {
+            let metric = values.get(&kind);
+            csv.write_record([
+                query.from.to_string(),
+                query.to.to_string(),
+                scope.into(),
+                app.clone(),
+                safe(device),
+                safe(name),
+                timestamp.clone(),
+                format!("{kind:?}"),
+                kind.unit().into(),
+                optional(metric.map(|m| m.average)),
+                optional(metric.map(|m| m.peak)),
+                format!("{:.3}", metric.map_or(0.0, |m| m.observed_secs)),
+                optional(metric.map(|m| m.integral)),
+                if matches!(kind, MetricKind::IoRead | MetricKind::IoWrite) {
+                    optional(metric.map(|m| m.integral))
+                } else {
+                    String::new()
+                },
+            ])
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    };
+    if series {
+        for series in &view.data.series {
+            for point in &series.points {
+                row(
+                    "application",
+                    series.application.id.to_string(),
+                    "",
+                    &series.application.name,
+                    point.timestamp.to_string(),
+                    &point.metrics,
+                )?;
+            }
+        }
+    } else {
+        for app in &view.data.applications {
+            row(
+                "application",
+                app.id.to_string(),
+                "",
+                &app.name,
+                String::new(),
+                &app.metrics,
+            )?;
+        }
+        for device in &view.data.devices {
+            row(
+                "device",
+                String::new(),
+                &device.id,
+                &device.name,
+                String::new(),
+                &device.metrics,
+            )?;
+        }
+    }
+    csv.flush().map_err(|e| e.to_string())
 }
 fn write_summary(
     output: impl Write,
@@ -118,6 +218,8 @@ fn write_summary(
         "network_observed_seconds",
         "last_seen_utc_seconds",
         "gpu_observed_seconds",
+        "cpu_observed_seconds",
+        "ram_observed_seconds",
     ])
     .map_err(|e| e.to_string())?;
     for app in &view.data.applications {
@@ -132,17 +234,19 @@ fn write_summary(
                 "{:.3}",
                 app.observed_secs / (query.to - query.from).max(1) as f64 * 100.0
             ),
-            format!("{:.3}", app.cpu_avg),
-            format!("{:.3}", app.cpu_peak),
-            format!("{:.3}", app.cpu_seconds),
-            format!("{:.3}", app.ram_avg),
-            app.ram_peak.to_string(),
+            optional(app.cpu_avg),
+            optional(app.cpu_peak),
+            optional(app.cpu_seconds),
+            optional(app.ram_avg),
+            app.ram_peak.map(|v| v.to_string()).unwrap_or_default(),
             optional(app.gpu_avg),
             optional(app.downloaded_bytes),
             optional(app.uploaded_bytes),
             format!("{:.3}", app.network_observed_secs),
             app.last_seen.to_string(),
             format!("{:.3}", app.gpu_observed_secs),
+            format!("{:.3}", app.cpu_observed_secs),
+            format!("{:.3}", app.ram_observed_secs),
         ])
         .map_err(|e| e.to_string())?;
     }
@@ -164,10 +268,10 @@ fn point_row(
         point.timestamp.to_string(),
         local_time(point.timestamp),
         format!("{:.3}", point.duration_secs),
-        format!("{:.3}", point.cpu_avg),
-        format!("{:.3}", point.cpu_peak),
-        format!("{:.3}", point.ram_avg),
-        point.ram_peak.to_string(),
+        optional(point.cpu_avg),
+        optional(point.cpu_peak),
+        optional(point.ram_avg),
+        point.ram_peak.map(|v| v.to_string()).unwrap_or_default(),
         optional(point.gpu_avg),
         optional(point.down_bps),
         optional(point.up_bps),
@@ -175,6 +279,8 @@ fn point_row(
         optional(point.uploaded_bytes),
         format!("{:.3}", point.gpu_observed_secs),
         format!("{:.3}", point.network_observed_secs),
+        format!("{:.3}", point.cpu_observed_secs),
+        format!("{:.3}", point.ram_observed_secs),
     ]
 }
 fn write_points(
@@ -204,6 +310,8 @@ fn write_points(
         "uploaded_bytes",
         "gpu_observed_seconds",
         "network_observed_seconds",
+        "cpu_observed_seconds",
+        "ram_observed_seconds",
     ])
     .map_err(|e| e.to_string())?;
     if applications {
@@ -232,6 +340,102 @@ fn write_points(
 mod tests {
     use super::*;
     use crate::history::types::*;
+    #[test]
+    fn supplemental_csv_preserves_coverage_totals_unknowns_and_device_identity() {
+        use crate::metrics::MetricKind;
+        let query = HistoryQuery {
+            request_id: 1,
+            from: 0,
+            to: 30,
+            application_ids: vec![7],
+        };
+        let view = HistoryView {
+            request_id: 1,
+            data: HistoryData {
+                applications: vec![ApplicationSummary {
+                    id: 7,
+                    name: "=bad".into(),
+                    metrics: [(
+                        MetricKind::IoRead,
+                        HistoricalMetric {
+                            average: 100.0,
+                            peak: 200.0,
+                            observed_secs: 2.0,
+                            integral: 200.0,
+                        },
+                    )]
+                    .into(),
+                    ..Default::default()
+                }],
+                devices: vec![DeviceHistory {
+                    id: "disk:0".into(),
+                    name: "+disk".into(),
+                    metrics: [(
+                        MetricKind::IoRead,
+                        HistoricalMetric {
+                            average: 50.0,
+                            peak: 50.0,
+                            observed_secs: 4.0,
+                            integral: 200.0,
+                        },
+                    )]
+                    .into(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bytes = Vec::new();
+        write_supplementary(&mut bytes, &query, &view, false).unwrap();
+        let mut reader = csv::ReaderBuilder::new()
+            .delimiter(b';')
+            .from_reader(&bytes[3..]);
+        let rows: Vec<_> = reader.records().collect::<Result<_, _>>().unwrap();
+        assert_eq!(&rows[0][2], "application");
+        assert_eq!(&rows[0][5], "'=bad");
+        assert_eq!(&rows[0][11], "2.000");
+        assert_eq!(&rows[0][13], "200.000");
+        assert_eq!(&rows[1][9], "");
+        assert_eq!(&rows[crate::metrics::MetricKind::ALL.len()][4], "disk:0");
+        assert_eq!(&rows[crate::metrics::MetricKind::ALL.len()][5], "'+disk");
+    }
+
+    #[test]
+    fn cpu_ram_unknown_export_is_blank_with_independent_coverage() {
+        let query = HistoryQuery {
+            request_id: 1,
+            from: 0,
+            to: 30,
+            ..Default::default()
+        };
+        let view = HistoryView {
+            request_id: 1,
+            data: HistoryData {
+                applications: vec![ApplicationSummary {
+                    observed_secs: 10.0,
+                    ram_avg: Some(123.0),
+                    ram_peak: Some(150),
+                    ram_observed_secs: 5.0,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bytes = Vec::new();
+        write_summary(&mut bytes, &query, &view).unwrap();
+        let mut reader = csv::ReaderBuilder::new()
+            .delimiter(b';')
+            .from_reader(&bytes[3..]);
+        let row = reader.records().next().unwrap().unwrap();
+        assert_eq!(&row[7], "");
+        assert_eq!(&row[8], "");
+        assert_eq!(&row[9], "");
+        assert_eq!(&row[10], "123.000");
+        assert_eq!(&row[18], "0.000");
+        assert_eq!(&row[19], "5.000");
+    }
+
     #[test]
     fn historical_reports_preserve_window_identity_unknowns_and_formula_safety() {
         let query = HistoryQuery {

@@ -1,5 +1,23 @@
 //! Shared, renderer-independent history contracts. Times are UTC Unix seconds.
+use crate::metrics::MetricKind;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+/// Duration-weighted measurements. Integral is value * observed seconds.
+#[derive(Clone, Debug, Default)]
+pub struct HistoricalMetric {
+    pub average: f64,
+    pub peak: f64,
+    pub observed_secs: f64,
+    pub integral: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DeviceHistory {
+    pub id: String,
+    pub name: String,
+    pub metrics: BTreeMap<MetricKind, HistoricalMetric>,
+}
 
 pub const BUCKET_SECONDS: i64 = 30;
 pub const MAX_COMPARISON_APPS: usize = 4;
@@ -28,12 +46,15 @@ pub struct HistoryQuery {
 
 #[derive(Clone, Debug, Default)]
 pub struct HistoryPoint {
+    pub metrics: BTreeMap<MetricKind, HistoricalMetric>,
     pub timestamp: i64,
     pub duration_secs: f64,
-    pub cpu_avg: f64,
-    pub cpu_peak: f64,
-    pub ram_avg: f64,
-    pub ram_peak: u64,
+    pub cpu_avg: Option<f64>,
+    pub cpu_observed_secs: f64,
+    pub cpu_peak: Option<f64>,
+    pub ram_avg: Option<f64>,
+    pub ram_observed_secs: f64,
+    pub ram_peak: Option<u64>,
     pub gpu_avg: Option<f64>,
     pub gpu_observed_secs: f64,
     pub network_observed_secs: f64,
@@ -45,15 +66,18 @@ pub struct HistoryPoint {
 
 #[derive(Clone, Debug, Default)]
 pub struct ApplicationSummary {
+    pub metrics: BTreeMap<MetricKind, HistoricalMetric>,
     pub id: i64,
     pub name: String,
     pub executable: String,
     pub observed_secs: f64,
-    pub cpu_avg: f64,
-    pub cpu_peak: f64,
-    pub cpu_seconds: f64,
-    pub ram_avg: f64,
-    pub ram_peak: u64,
+    pub cpu_avg: Option<f64>,
+    pub cpu_observed_secs: f64,
+    pub cpu_peak: Option<f64>,
+    pub cpu_seconds: Option<f64>,
+    pub ram_avg: Option<f64>,
+    pub ram_observed_secs: f64,
+    pub ram_peak: Option<u64>,
     pub gpu_avg: Option<f64>,
     pub gpu_observed_secs: f64,
     pub downloaded_bytes: Option<f64>,
@@ -70,6 +94,7 @@ pub struct ApplicationSeries {
 
 #[derive(Clone, Debug, Default)]
 pub struct HistoryData {
+    pub devices: Vec<DeviceHistory>,
     pub systems: Vec<HistoryPoint>,
     pub applications: Vec<ApplicationSummary>,
     pub series: Vec<ApplicationSeries>,
