@@ -1,13 +1,29 @@
+#[cfg(any(target_os = "linux", test))]
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GpuUsage {
+    /// Exact Linux process start token; unknown parser output must be bound before publication.
+    pub lifetime: Option<u64>,
     pub utilization_pct: Option<f32>,
     pub memory_bytes: Option<u64>,
 }
 
+#[cfg(any(target_os = "linux", test))]
 impl GpuUsage {
     pub fn combine(&mut self, other: Self) {
+        if self.lifetime != other.lifetime {
+            // A default map entry can adopt its first verified source. Once a
+            // source has an identity, stale or unbound measurements cannot add
+            // values to it. The caller inserts fresh DRM before cached pmon.
+            if self.lifetime.is_none()
+                && self.utilization_pct.is_none()
+                && self.memory_bytes.is_none()
+            {
+                *self = other;
+            }
+            return;
+        }
         // NVIDIA and DRM can report the same device. Never sum twice.
         self.utilization_pct = match (self.utilization_pct, other.utilization_pct) {
             (Some(a), Some(b)) => Some(a.max(b)),
@@ -21,6 +37,7 @@ impl GpuUsage {
 }
 
 /// NVIDIA pmon output is a Linux-only fallback for the proprietary driver.
+#[cfg(any(target_os = "linux", test))]
 pub fn parse_nvidia_pmon(output: &str) -> HashMap<u32, GpuUsage> {
     let mut result: HashMap<u32, GpuUsage> = HashMap::new();
     let mut fb_index = None;
@@ -53,6 +70,7 @@ pub fn parse_nvidia_pmon(output: &str) -> HashMap<u32, GpuUsage> {
             .and_then(|v| v.parse::<u64>().ok())
             .map(|mib| mib.saturating_mul(1024 * 1024));
         let sample = GpuUsage {
+            lifetime: None,
             utilization_pct: gpu_pct,
             memory_bytes: gpu_memory_bytes,
         };
@@ -120,8 +138,24 @@ pub mod drm {
         })
     }
 
+    fn utilization(
+        previous: &HashMap<(u32, u64), u64>,
+        pid: u32,
+        lifetime: u64,
+        busy_ns: u64,
+        elapsed_ns: f64,
+    ) -> Option<f32> {
+        if !elapsed_ns.is_finite() || elapsed_ns <= 0.0 || elapsed_ns > 15_000_000_000.0 {
+            return None;
+        }
+        previous
+            .get(&(pid, lifetime))
+            .and_then(|previous| busy_ns.checked_sub(*previous))
+            .map(|delta| (delta as f64 / elapsed_ns * 100.0).clamp(0.0, 100.0) as f32)
+    }
+
     pub struct DrmSampler {
-        previous: HashMap<u32, u64>,
+        previous: HashMap<(u32, u64), u64>,
         last: Instant,
     }
 
@@ -134,10 +168,14 @@ pub mod drm {
         }
 
         pub fn sample(&mut self, pids: &[u32]) -> HashMap<u32, GpuUsage> {
-            let elapsed_ns = self.last.elapsed().as_nanos().max(1) as f64;
+            let sampled_at = Instant::now();
+            let elapsed_ns = sampled_at.duration_since(self.last).as_nanos() as f64;
             let mut next = HashMap::new();
             let mut result = HashMap::new();
             for &pid in pids {
+                let Some(lifetime) = crate::process_details::process_lifetime(pid) else {
+                    continue;
+                };
                 let dir = format!("/proc/{pid}/fdinfo");
                 let Ok(entries) = fs::read_dir(dir) else {
                     continue;
@@ -171,22 +209,22 @@ pub mod drm {
                         have_memory = true;
                     }
                 }
+                if crate::process_details::process_lifetime(pid) != Some(lifetime) {
+                    continue;
+                }
                 if have_busy || have_memory {
                     if have_busy {
-                        next.insert(pid, sum_busy_ns);
+                        next.insert((pid, lifetime), sum_busy_ns);
                     }
                     let percent = if have_busy {
-                        self.previous.get(&pid).and_then(|prev| {
-                            sum_busy_ns.checked_sub(*prev).map(|delta| {
-                                (delta as f64 / elapsed_ns * 100.0).clamp(0.0, 100.0) as f32
-                            })
-                        })
+                        utilization(&self.previous, pid, lifetime, sum_busy_ns, elapsed_ns)
                     } else {
                         None
                     };
                     result.insert(
                         pid,
                         GpuUsage {
+                            lifetime: Some(lifetime),
                             utilization_pct: percent,
                             memory_bytes: have_memory.then_some(sum_memory_bytes),
                         },
@@ -194,7 +232,7 @@ pub mod drm {
                 }
             }
             self.previous = next;
-            self.last = Instant::now();
+            self.last = sampled_at;
             result
         }
     }
@@ -202,6 +240,25 @@ pub mod drm {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn drm_baselines_do_not_cross_pid_reuse_resets_or_long_gaps() {
+            let previous = [((42, 100), 1_000_000_000)].into();
+            assert_eq!(
+                utilization(&previous, 42, 100, 1_500_000_000, 1_000_000_000.0),
+                Some(50.0)
+            );
+            assert_eq!(
+                utilization(&previous, 42, 101, 1_500_000_000, 1_000_000_000.0),
+                None
+            );
+            assert_eq!(utilization(&previous, 42, 100, 999, 1_000_000_000.0), None);
+            assert_eq!(
+                utilization(&previous, 42, 100, 1_500_000_000, 16_000_000_000.0),
+                None
+            );
+            assert_eq!(utilization(&previous, 42, 100, 1_500_000_000, 0.0), None);
+        }
 
         #[test]
         fn vram_only_fdinfo_does_not_claim_gpu_utilization() {
@@ -248,5 +305,38 @@ mod tests {
         let mut usage = GpuUsage::default();
         usage.combine(GpuUsage::default());
         assert_eq!(usage.utilization_pct, None);
+    }
+    #[test]
+    fn combine_never_transfers_gpu_data_between_exact_lifetimes() {
+        let mut current = GpuUsage {
+            lifetime: Some(200),
+            utilization_pct: Some(5.0),
+            memory_bytes: Some(100),
+        };
+        current.combine(GpuUsage {
+            lifetime: Some(100),
+            utilization_pct: Some(90.0),
+            memory_bytes: Some(900),
+        });
+        assert_eq!(current.lifetime, Some(200));
+        assert_eq!(current.utilization_pct, Some(5.0));
+        assert_eq!(current.memory_bytes, Some(100));
+        current.combine(GpuUsage {
+            lifetime: None,
+            utilization_pct: Some(95.0),
+            memory_bytes: Some(1000),
+        });
+        assert_eq!(current.utilization_pct, Some(5.0));
+        current.combine(GpuUsage {
+            lifetime: Some(200),
+            utilization_pct: Some(10.0),
+            memory_bytes: Some(200),
+        });
+        assert_eq!(current.utilization_pct, Some(10.0));
+        assert_eq!(current.memory_bytes, Some(200));
+        let mut empty = GpuUsage::default();
+        empty.combine(current);
+        assert_eq!(empty.lifetime, Some(200));
+        assert_eq!(empty.utilization_pct, Some(10.0));
     }
 }

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct Settings {
     pub close_to_tray: bool,
+    pub alerts: crate::alerts::AlertConfig,
     pub poll_interval_ms: u64,
     pub enable_linux_traffic: bool,
     pub enable_windows_traffic: bool,
@@ -20,6 +21,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             close_to_tray: true,
+            alerts: crate::alerts::AlertConfig::default(),
             poll_interval_ms: 2000,
             enable_linux_traffic: false,
             enable_windows_traffic: false,
@@ -64,6 +66,7 @@ impl Settings {
     }
 
     pub fn validated(mut self) -> Self {
+        self.alerts = self.alerts.validated();
         if ![1000, 2000, 5000].contains(&self.poll_interval_ms) {
             self.poll_interval_ms = 2000;
         }
@@ -97,6 +100,22 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_settings_leave_alerts_off_and_explicit_preferences_round_trip() {
+        let legacy: Settings = serde_json::from_str(r#"{"close_to_tray":false}"#).unwrap();
+        assert!(!legacy.alerts.enabled);
+        assert!(!legacy.alerts.desktop);
+        let mut configured = legacy;
+        configured.alerts.enabled = true;
+        configured.alerts.rules[0].duration_secs = 42;
+        let decoded: Settings =
+            serde_json::from_str(&serde_json::to_string(&configured).unwrap()).unwrap();
+        assert!(decoded.alerts.enabled);
+        assert!(!decoded.alerts.desktop);
+        assert_eq!(decoded.alerts.rules[0].duration_secs, 42);
+        assert!(!decoded.close_to_tray);
+    }
 
     #[test]
     fn legacy_disabled_network_offers_setup_without_requesting_privileges() {

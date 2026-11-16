@@ -1,20 +1,36 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod alerts;
 mod app;
 #[cfg(any(target_os = "windows", test))]
 mod autostart;
 mod collector;
+mod command;
+mod connections;
+mod desktop_notifications;
+mod disk;
 mod export;
+#[cfg(any(target_os = "linux", test))]
 mod gpu;
 mod history;
 mod history_export;
 mod icon;
+mod metrics;
 mod model;
 mod network;
+#[cfg(target_os = "linux")]
 mod nvidia;
+#[cfg(target_os = "windows")]
+mod pdh;
+mod process_details;
 mod settings;
+mod thermal;
 mod tray;
 mod ui;
+#[cfg(any(target_os = "windows", test))]
+mod windows_gpu;
+#[cfg(any(target_os = "windows", test))]
+mod windows_processes;
 
 use eframe::egui;
 use std::sync::Arc;

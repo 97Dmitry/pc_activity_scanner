@@ -1,7 +1,8 @@
 # Architecture
 
 The application is a local desktop monitor. It samples resource counters; it
-never controls other processes or sends their metadata to a service.
+never controls monitored processes or sends their metadata to a service.
+Only the lifetime of its own capture/driver CLI helpers is managed.
 
 ## Responsibilities
 
@@ -13,9 +14,14 @@ never controls other processes or sends their metadata to a service.
 | `history` | Duration-weighted buckets, SQLite store, schema/retention and bounded worker/service |
 | `history_export` | Explicit asynchronous CSV export of a selected historical result |
 | `model` | Metric types, search, grouping, sorting and cached visible rows |
-| `collector` | Background sysinfo sampling and process-lifetime traffic ledger |
+| `collector` | Background system/discovery sampling, native enrichment and process-lifetime traffic ledger |
+| `process_details`, `windows_processes` | Coherent native CPU/RAM availability, private memory/faults and exact process lifetimes |
 | `network` | NetHogs/Windows ETW sources, bounded frame delivery and helper lifetime |
-| `gpu`, `nvidia` | Driver-dependent DRM/NVIDIA sampling |
+| `gpu`, `nvidia`, `windows_gpu` | Driver-dependent DRM/NVIDIA and Windows PDH GPU sampling |
+| `disk`, `pdh`, `metrics` | Process I/O, independent device activity and typed supplementary measurements |
+| `connections` | Bounded selected-lifetime IP Helper / procfs socket queries |
+| `thermal`, `command` | Named temperature/thermal evidence and bounded owned CLI workers |
+| `alerts`, `desktop_notifications` | Pure collector rules, bounded journal and opt-in desktop delivery |
 | `autostart` | Asynchronous Windows Task Scheduler query/configuration with original-user and protected-path checks |
 | `icon` | Embedded window/tray artwork; Windows EXE resource via build script |
 | `settings` | Validated JSON configuration and safe file replacement |
@@ -27,7 +33,9 @@ never controls other processes or sends their metadata to a service.
 The network reader publishes both the latest rates and a bounded queue of
 completed frames. The collector consumes each pending frame once, independent
 of the configured 1/2/5-second process polling interval. Totals are keyed by
-`(pid, start_time)` and pruned when a process exits. Attribution is still an
+`(pid, UTC start, native token)` and pruned when a process exits. A Linux
+process birth must precede the whole actual NetHogs frame; unverified young
+processes remain unknown. Attribution is still an
 estimate: a process which exits between process samples may be absent, and
 NetHogs does not expose a process-start timestamp.
 
@@ -40,9 +48,16 @@ bounded SQLite pipeline; see [HISTORY.md](HISTORY.md).
 
 Search matches original process names, PIDs and executable paths **before**
 name grouping. CPU/RAM/activity thresholds apply to the resulting groups.
-CSV exports use exactly the same cached rows shown in the table.
+CSV exports use exactly the same cached rows shown in the table, on a worker.
+Expanded groups carry explicit summary/member row types; tree mode resolves
+parent links with native lifetimes and never equates equal names with ancestry.
+Only snapshot/filter/sort/expansion changes rebuild the virtualized view.
 
 ## Persistent history
+
+CPU and RAM availability are optional independently. Linux validates native
+stat/status/path/stat; Windows takes native process CPU/memory/identity together,
+including minimal VMs. Resident sums do not deduplicate shared pages.
 
 Each completed collector snapshot carries a UTC acquisition timestamp, a process
 start identity and a monotonic contiguous interval. Initial/resume intervals are
@@ -76,7 +91,10 @@ its executable must be root-owned and protected against group/other writes.
 The GUI stays unprivileged by default. Windows opt-in ETW network capture runs
 in a separate UAC helper with a unique session and authenticated bounded local
 IPC. Epoch checks prevent stopped sessions overwriting new state. Lost events
-or helper failure make network data unavailable. GPU remains unsupported.
+or helper failure make network data unavailable. Windows GPU uses unprivileged
+PDH GPU Engine/Process Memory queries on the collector thread; utilization is
+the busiest available engine across adapters, with separate dedicated/shared
+reported memory. Counter buffers and instance counts are bounded.
 
 Windows startup is managed by an asynchronous per-user Task Scheduler adapter.
 It queries actual OS state rather than treating JSON as authoritative. Original
@@ -99,3 +117,12 @@ A virtual X11
 smoke test can establish startup and window resizing; it does not prove actual
 Windows, Wayland, system tray or Polkit behavior. Use `QA_CHECKLIST.md` for
 those checks before declaring a stable release.
+
+
+Rules evaluate complete collector snapshots, not repaint events. Settings revisions
+preserve off/on changes between samples; process keys include native lifetimes.
+The bounded journal remains in memory, while the independent delivery worker
+handles at most eight queued desktop jobs with generation checks. Disabling or
+pausing cancels unaccepted jobs. Requests already accepted by the OS may remain
+visible according to desktop policy. GUI quit signals workers and polls stopped
+acknowledgements; it never joins native delivery/CLI work on a GUI callback.

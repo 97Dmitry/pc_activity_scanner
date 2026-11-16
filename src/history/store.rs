@@ -51,7 +51,7 @@ impl Store {
             |r| r.get(0),
         )?;
         if !((version == 0 && id == 0 && tables == 0)
-            || ([1, 2].contains(&version) && id == APPLICATION_ID))
+            || ([1, 2, 3, 4].contains(&version) && id == APPLICATION_ID))
         {
             return Err(rusqlite::Error::InvalidQuery);
         }
@@ -81,6 +81,28 @@ impl Store {
                 PRAGMA user_version=2; COMMIT;")?;
         }
         connection.prepare("SELECT high_water FROM history_state WHERE id=1")?;
+        if version <= 2 {
+            connection.execute_batch("BEGIN IMMEDIATE;
+                CREATE TABLE extra_metrics(timestamp INTEGER NOT NULL,application_id INTEGER NOT NULL,
+                    device_id TEXT NOT NULL,name TEXT NOT NULL,kind TEXT NOT NULL,
+                    value_sum REAL NOT NULL,seconds REAL NOT NULL,peak REAL NOT NULL,
+                    PRIMARY KEY(timestamp,application_id,device_id,kind)) WITHOUT ROWID;
+                CREATE INDEX extra_metrics_application ON extra_metrics(application_id,device_id,timestamp);
+                PRAGMA user_version=3; COMMIT;")?;
+        }
+        connection.prepare("SELECT timestamp,application_id,device_id,name,kind,value_sum,seconds,peak FROM extra_metrics LIMIT 0")?;
+
+        if version <= 3 {
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                ALTER TABLE buckets ADD COLUMN cpu_observed_seconds REAL NOT NULL DEFAULT 0;
+                ALTER TABLE buckets ADD COLUMN ram_observed_seconds REAL NOT NULL DEFAULT 0;
+                UPDATE buckets SET cpu_observed_seconds=seconds,ram_observed_seconds=seconds;
+                PRAGMA user_version=4; COMMIT;",
+            )?;
+        }
+        connection
+            .prepare("SELECT cpu_observed_seconds,ram_observed_seconds FROM buckets LIMIT 0")?;
         let page_size: i64 = connection.query_row("PRAGMA page_size", [], |r| r.get(0))?;
         let max_pages = 512_i64 * 1024 * 1024 / page_size;
         connection.pragma_update(None, "max_page_count", max_pages)?;
@@ -125,6 +147,10 @@ impl Store {
                     |r| r.get(0),
                 )?;
                 save_metric(&tx, &bucket, id, &app.metric, app.last_seen)?;
+                save_extra(&tx, bucket.timestamp, id, "", &app.name, &app.metric.extra)?;
+            }
+            for (id, device) in &bucket.devices {
+                save_extra(&tx, bucket.timestamp, 0, id, &device.name, &device.extra)?;
             }
         }
         tx.commit()
@@ -149,23 +175,30 @@ impl Store {
         data.ram_total_bytes=self.connection.query_row("SELECT ram_total FROM buckets WHERE application_id=0 ORDER BY timestamp DESC LIMIT 1",[],|r|r.get::<_,i64>(0)).optional()?.unwrap_or(0).max(0) as u64;
         data.systems = self.points(0, query)?;
         data.recorded_secs = data.systems.iter().map(|p| p.duration_secs).sum();
-        let mut statement=self.connection.prepare_cached("SELECT a.id,a.name,a.executable,sum(b.seconds),sum(b.cpu_sum),max(b.cpu_peak),sum(b.ram_sum),max(b.ram_peak),sum(b.gpu_sum),sum(b.gpu_seconds),sum(b.down),sum(b.up),sum(b.network_seconds),max(b.last_seen)
+        let mut statement=self.connection.prepare_cached("SELECT a.id,a.name,a.executable,sum(b.seconds),sum(b.cpu_sum),max(CASE WHEN b.cpu_observed_seconds>0 THEN b.cpu_peak END),sum(b.ram_sum),max(CASE WHEN b.ram_observed_seconds>0 THEN b.ram_peak END),sum(b.gpu_sum),sum(b.gpu_seconds),sum(b.down),sum(b.up),sum(b.network_seconds),max(b.last_seen),sum(b.cpu_observed_seconds),sum(b.ram_observed_seconds)
             FROM applications a JOIN buckets b ON b.application_id=a.id WHERE b.timestamp>=?1 AND b.timestamp<?2 GROUP BY a.id ORDER BY sum(b.cpu_sum) DESC,a.id")?;
         let rows = statement.query_map(params![query.from, query.to], |r| {
             let seconds: f64 = r.get(3)?;
             let cpu: f64 = r.get(4)?;
+            let cpu_seconds: f64 = r.get(14)?;
+            let ram_seconds: f64 = r.get(15)?;
             let gpu_seconds: f64 = r.get(9)?;
             let network_seconds: f64 = r.get(12)?;
             Ok(ApplicationSummary {
+                metrics: Default::default(),
                 id: r.get(0)?,
                 name: r.get(1)?,
                 executable: r.get(2)?,
                 observed_secs: seconds,
-                cpu_avg: cpu / seconds,
+                cpu_avg: (cpu_seconds > 0.0).then_some(cpu / cpu_seconds),
+                cpu_observed_secs: cpu_seconds,
                 cpu_peak: r.get(5)?,
-                cpu_seconds: cpu / 100.0,
-                ram_avg: r.get::<_, f64>(6)? / seconds,
-                ram_peak: r.get::<_, i64>(7)?.max(0) as u64,
+                cpu_seconds: (cpu_seconds > 0.0).then_some(cpu / 100.0),
+                ram_avg: (ram_seconds > 0.0)
+                    .then(|| r.get::<_, f64>(6).map(|v| v / ram_seconds))
+                    .transpose()?,
+                ram_observed_secs: ram_seconds,
+                ram_peak: r.get::<_, Option<i64>>(7)?.map(|v| v.max(0) as u64),
                 gpu_avg: (gpu_seconds > 0.0)
                     .then(|| r.get::<_, f64>(8).map(|v| v / gpu_seconds))
                     .transpose()?,
@@ -177,6 +210,7 @@ impl Store {
             })
         })?;
         data.applications = rows.collect::<Result<_, _>>()?;
+        self.extra_summaries(query, &mut data)?;
         for id in &query.application_ids {
             if data.series.iter().any(|s| s.application.id == *id) {
                 continue;
@@ -191,21 +225,32 @@ impl Store {
         Ok(data)
     }
     fn points(&self, id: i64, query: &HistoryQuery) -> Result<Vec<HistoryPoint>, rusqlite::Error> {
-        let mut statement=self.connection.prepare_cached("SELECT timestamp,seconds,cpu_sum,cpu_peak,ram_sum,ram_peak,gpu_sum,gpu_seconds,down,up,network_seconds FROM buckets WHERE application_id=?1 AND timestamp>=?2 AND timestamp<?3 ORDER BY timestamp LIMIT ?4")?;
-        statement
+        let mut statement=self.connection.prepare_cached("SELECT timestamp,seconds,cpu_sum,cpu_peak,ram_sum,ram_peak,gpu_sum,gpu_seconds,down,up,network_seconds,cpu_observed_seconds,ram_observed_seconds FROM buckets WHERE application_id=?1 AND timestamp>=?2 AND timestamp<?3 ORDER BY timestamp LIMIT ?4")?;
+        let mut points: Vec<HistoryPoint> = statement
             .query_map(params![id, query.from, query.to, MAX_POINTS as i64], |r| {
                 let seconds: f64 = r.get(1)?;
+                let cpu_seconds: f64 = r.get(11)?;
+                let ram_seconds: f64 = r.get(12)?;
                 let gpu_seconds: f64 = r.get(7)?;
                 let network_seconds: f64 = r.get(10)?;
                 let down: f64 = r.get(8)?;
                 let up: f64 = r.get(9)?;
                 Ok(HistoryPoint {
+                    metrics: Default::default(),
                     timestamp: r.get(0)?,
                     duration_secs: seconds,
-                    cpu_avg: r.get::<_, f64>(2)? / seconds,
-                    cpu_peak: r.get(3)?,
-                    ram_avg: r.get::<_, f64>(4)? / seconds,
-                    ram_peak: r.get::<_, i64>(5)?.max(0) as u64,
+                    cpu_avg: (cpu_seconds > 0.0)
+                        .then(|| r.get::<_, f64>(2).map(|v| v / cpu_seconds))
+                        .transpose()?,
+                    cpu_observed_secs: cpu_seconds,
+                    cpu_peak: (cpu_seconds > 0.0).then(|| r.get(3)).transpose()?,
+                    ram_avg: (ram_seconds > 0.0)
+                        .then(|| r.get::<_, f64>(4).map(|v| v / ram_seconds))
+                        .transpose()?,
+                    ram_observed_secs: ram_seconds,
+                    ram_peak: (ram_seconds > 0.0)
+                        .then(|| r.get::<_, i64>(5).map(|v| v.max(0) as u64))
+                        .transpose()?,
                     gpu_avg: (gpu_seconds > 0.0)
                         .then(|| r.get::<_, f64>(6).map(|v| v / gpu_seconds))
                         .transpose()?,
@@ -217,12 +262,75 @@ impl Store {
                     uploaded_bytes: (network_seconds > 0.0).then_some(up),
                 })
             })?
-            .collect()
+            .collect::<Result<_, _>>()?;
+        let indexes: std::collections::HashMap<_, _> = points
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.timestamp, i))
+            .collect();
+        let mut extras = self.connection.prepare_cached("SELECT timestamp,kind,value_sum,seconds,peak FROM extra_metrics WHERE application_id=?1 AND device_id='' AND timestamp>=?2 AND timestamp<?3 ORDER BY timestamp,kind LIMIT ?4")?;
+        let mut rows = extras.query(params![
+            id,
+            query.from,
+            query.to,
+            (MAX_POINTS * crate::metrics::MetricKind::ALL.len()) as i64
+        ])?;
+        while let Some(row) = rows.next()? {
+            let timestamp: i64 = row.get(0)?;
+            if let Some(&index) = indexes.get(&timestamp) {
+                let kind = parse_kind(row.get::<_, String>(1)?)?;
+                points[index].metrics.insert(
+                    kind,
+                    historical_metric(row.get(2)?, row.get(3)?, row.get(4)?)?,
+                );
+            }
+        }
+        Ok(points)
+    }
+    fn extra_summaries(
+        &self,
+        query: &HistoryQuery,
+        data: &mut HistoryData,
+    ) -> Result<(), rusqlite::Error> {
+        let indexes: std::collections::HashMap<_, _> = data
+            .applications
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (a.id, i))
+            .collect();
+        let mut devices: std::collections::BTreeMap<String, DeviceHistory> = Default::default();
+        let mut statement = self.connection.prepare_cached("SELECT application_id,device_id,max(name),kind,sum(value_sum),sum(seconds),max(peak) FROM extra_metrics WHERE timestamp>=?1 AND timestamp<?2 GROUP BY application_id,device_id,kind ORDER BY application_id,device_id,kind")?;
+        let mut rows = statement.query(params![query.from, query.to])?;
+        while let Some(row) = rows.next()? {
+            let app_id: i64 = row.get(0)?;
+            let device_id: String = row.get(1)?;
+            let kind = parse_kind(row.get(3)?)?;
+            let metric = historical_metric(row.get(4)?, row.get(5)?, row.get(6)?)?;
+            if device_id.is_empty() {
+                if let Some(&index) = indexes.get(&app_id) {
+                    data.applications[index].metrics.insert(kind, metric);
+                }
+            } else {
+                let device = devices
+                    .entry(device_id.clone())
+                    .or_insert_with(|| DeviceHistory {
+                        id: device_id,
+                        ..Default::default()
+                    });
+                device.name = row.get(2)?;
+                device.metrics.insert(kind, metric);
+            }
+        }
+        data.devices = devices.into_values().collect();
+        Ok(())
     }
     pub fn retain(&mut self, now: i64, days: u32) -> Result<(), String> {
         let cutoff = now.saturating_sub(i64::from(days) * 86400);
         self.connection
             .execute("DELETE FROM buckets WHERE timestamp<?1", [cutoff])
+            .map_err(|e| e.to_string())?;
+        self.connection
+            .execute("DELETE FROM extra_metrics WHERE timestamp<?1", [cutoff])
             .map_err(|e| e.to_string())?;
         self.connection.execute("DELETE FROM applications WHERE NOT EXISTS (SELECT 1 FROM buckets WHERE application_id=applications.id)",[]).map_err(|e|e.to_string())?;
         Ok(())
@@ -230,6 +338,8 @@ impl Store {
     pub fn clear(&mut self) -> Result<(), String> {
         let tx = self.connection.transaction().map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM buckets", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM extra_metrics", [])
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM applications", [])
             .map_err(|e| e.to_string())?;
@@ -241,6 +351,48 @@ impl Store {
             .map_err(|e| e.to_string())
     }
 }
+fn parse_kind(text: String) -> Result<crate::metrics::MetricKind, rusqlite::Error> {
+    serde_json::from_str(&text).map_err(|_| rusqlite::Error::InvalidQuery)
+}
+fn historical_metric(
+    sum: f64,
+    seconds: f64,
+    peak: f64,
+) -> Result<HistoricalMetric, rusqlite::Error> {
+    if !sum.is_finite()
+        || !seconds.is_finite()
+        || !peak.is_finite()
+        || seconds <= 0.0
+        || sum < 0.0
+        || peak < 0.0
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(HistoricalMetric {
+        average: sum / seconds,
+        peak,
+        observed_secs: seconds,
+        integral: sum,
+    })
+}
+fn save_extra(
+    connection: &Connection,
+    timestamp: i64,
+    application_id: i64,
+    device_id: &str,
+    name: &str,
+    metrics: &std::collections::BTreeMap<
+        crate::metrics::MetricKind,
+        super::aggregation::ExtraMetric,
+    >,
+) -> Result<(), rusqlite::Error> {
+    for (kind, m) in metrics {
+        historical_metric(m.sum, m.seconds, m.peak)?;
+        let kind = serde_json::to_string(kind).map_err(|_| rusqlite::Error::InvalidQuery)?;
+        connection.execute("INSERT INTO extra_metrics VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(timestamp,application_id,device_id,kind) DO UPDATE SET name=excluded.name,value_sum=value_sum+excluded.value_sum,seconds=seconds+excluded.seconds,peak=max(peak,excluded.peak)", params![timestamp,application_id,device_id,name,kind,m.sum,m.seconds,m.peak])?;
+    }
+    Ok(())
+}
 fn save_metric(
     connection: &Connection,
     bucket: &Bucket,
@@ -248,12 +400,12 @@ fn save_metric(
     m: &Metric,
     last_seen: i64,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute("INSERT INTO buckets VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+    connection.execute("INSERT INTO buckets VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
         ON CONFLICT(timestamp,application_id) DO UPDATE SET last_seen=max(last_seen,excluded.last_seen),ram_total=excluded.ram_total,
         seconds=seconds+excluded.seconds,cpu_sum=cpu_sum+excluded.cpu_sum,cpu_peak=max(cpu_peak,excluded.cpu_peak),
         ram_sum=ram_sum+excluded.ram_sum,ram_peak=max(ram_peak,excluded.ram_peak),gpu_sum=gpu_sum+excluded.gpu_sum,
-        gpu_seconds=gpu_seconds+excluded.gpu_seconds,down=down+excluded.down,up=up+excluded.up,network_seconds=network_seconds+excluded.network_seconds",
-        params![bucket.timestamp,id,last_seen,bucket.ram_total.min(i64::MAX as u64) as i64,m.seconds,m.cpu_sum,m.cpu_peak,m.ram_sum,m.ram_peak.min(i64::MAX as u64) as i64,m.gpu_sum,m.gpu_seconds,m.down,m.up,m.network_seconds])?;
+        gpu_seconds=gpu_seconds+excluded.gpu_seconds,down=down+excluded.down,up=up+excluded.up,network_seconds=network_seconds+excluded.network_seconds,cpu_observed_seconds=cpu_observed_seconds+excluded.cpu_observed_seconds,ram_observed_seconds=ram_observed_seconds+excluded.ram_observed_seconds",
+        params![bucket.timestamp,id,last_seen,bucket.ram_total.min(i64::MAX as u64) as i64,m.seconds,m.cpu_sum,m.cpu_peak,m.ram_sum,m.ram_peak.min(i64::MAX as u64) as i64,m.gpu_sum,m.gpu_seconds,m.down,m.up,m.network_seconds,m.cpu_seconds,m.ram_seconds])?;
     Ok(())
 }
 
@@ -263,7 +415,10 @@ mod tests {
     use super::*;
     fn bucket(at: i64) -> Bucket {
         let metric = Metric {
+            extra: Default::default(),
             seconds: 10.0,
+            cpu_seconds: 10.0,
+            ram_seconds: 10.0,
             cpu_sum: 200.0,
             cpu_peak: 30.0,
             ram_sum: 1000.0,
@@ -279,6 +434,7 @@ mod tests {
             last_seen: at + 10,
             observed_until: (at + 10) as f64,
             ram_total: 2000,
+            devices: Default::default(),
             system: metric.clone(),
             applications: [(
                 "path:/a".into(),
@@ -302,6 +458,144 @@ mod tests {
     }
 
     #[test]
+    fn supplemental_history_migrates_v2_and_merges_exports_independent_coverage() {
+        use crate::metrics::MetricKind;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("supplementary");
+        {
+            let mut s = Store::open(&path).unwrap();
+            s.save(vec![bucket(30)]).unwrap();
+            s.connection
+                .execute_batch("DROP TABLE extra_metrics; ALTER TABLE buckets DROP COLUMN cpu_observed_seconds; ALTER TABLE buckets DROP COLUMN ram_observed_seconds; PRAGMA user_version=2;")
+                .unwrap();
+        }
+        let mut s = Store::open(&path).unwrap();
+        assert_eq!(s.high_water().unwrap(), Some(40.0));
+        assert!(
+            s.query(&query()).unwrap().applications[0]
+                .metrics
+                .is_empty()
+        );
+        let mut b = bucket(60);
+        b.applications
+            .get_mut("path:/a")
+            .unwrap()
+            .metric
+            .extra
+            .insert(
+                MetricKind::IoRead,
+                super::super::aggregation::ExtraMetric {
+                    sum: 1000.0,
+                    seconds: 5.0,
+                    peak: 250.0,
+                },
+            );
+        s.save(vec![b.clone(), b]).unwrap();
+        drop(s);
+        let mut s = Store::open(&path).unwrap();
+        let data = s.query(&query()).unwrap();
+        let m = &data.applications[0].metrics[&MetricKind::IoRead];
+        assert_eq!(m.average, 200.0);
+        assert_eq!(m.integral, 2000.0);
+        assert_eq!(m.observed_secs, 10.0);
+        assert_eq!(m.peak, 250.0);
+        let mut q = query();
+        q.application_ids.push(data.applications[0].id);
+        assert_eq!(
+            s.query(&q).unwrap().series[0].points[1].metrics[&MetricKind::IoRead].observed_secs,
+            10.0
+        );
+        s.retain(90_000, 1).unwrap();
+        assert!(s.query(&query()).unwrap().applications.is_empty());
+        let n: i64 = s
+            .connection
+            .query_row("SELECT count(*) FROM extra_metrics", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        s.clear().unwrap();
+    }
+
+    #[test]
+    fn partial_cpu_ram_history_averages_use_their_own_coverage() {
+        use super::super::aggregation::Aggregator;
+        use crate::model::{ProcessRow, Snapshot};
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("independent-coverage")).unwrap();
+        let mut aggregator = Aggregator::default();
+        for (timestamp, duration, cpu, ram) in [
+            (0, 0.0, None, None),
+            (2, 2.0, None, Some(100)),
+            (3, 1.0, Some(20.0), None),
+        ] {
+            aggregator.record(&Snapshot {
+                sampled_at: timestamp,
+                sample_seconds: duration,
+                process_rows: vec![ProcessRow {
+                    pid: 1,
+                    started_at: 1,
+                    name: "a".into(),
+                    executable: "/a".into(),
+                    cpu_pct: cpu,
+                    ram_bytes: ram,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        }
+        store.save(aggregator.take()).unwrap();
+        let data = store.query(&query()).unwrap();
+        let app = &data.applications[0];
+        assert_eq!(app.observed_secs, 3.0);
+        assert_eq!(app.cpu_avg, Some(20.0));
+        assert_eq!(app.cpu_observed_secs, 1.0);
+        assert_eq!(app.ram_avg, Some(100.0));
+        assert_eq!(app.ram_observed_secs, 2.0);
+        let mut selected = query();
+        selected.application_ids.push(app.id);
+        let data = store.query(&selected).unwrap();
+        assert_eq!(data.series[0].points[0].cpu_observed_secs, 1.0);
+        assert_eq!(data.series[0].points[0].ram_observed_secs, 2.0);
+    }
+
+    #[test]
+    fn schema_three_migrates_cpu_ram_coverage_and_preserves_unknown_new_intervals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("coverage-migration");
+        {
+            let mut s = Store::open(&path).unwrap();
+            s.save(vec![bucket(30)]).unwrap();
+            s.connection.execute_batch("ALTER TABLE buckets DROP COLUMN cpu_observed_seconds; ALTER TABLE buckets DROP COLUMN ram_observed_seconds; PRAGMA user_version=3;").unwrap();
+        }
+        let mut s = Store::open(&path).unwrap();
+        assert_eq!(s.high_water().unwrap(), Some(40.0));
+        let data = s.query(&query()).unwrap();
+        assert_eq!(data.applications[0].cpu_observed_secs, 10.0);
+        assert_eq!(data.applications[0].ram_observed_secs, 10.0);
+        let mut unknown = bucket(60);
+        let app = unknown.applications.get_mut("path:/a").unwrap();
+        app.metric.cpu_seconds = 0.0;
+        app.metric.ram_seconds = 0.0;
+        app.metric.cpu_sum = 0.0;
+        app.metric.ram_sum = 0.0;
+        app.metric.cpu_peak = 0.0;
+        app.metric.ram_peak = 0;
+        s.save(vec![unknown]).unwrap();
+        let mut q = query();
+        q.from = 60;
+        q.application_ids.push(data.applications[0].id);
+        let data = s.query(&q).unwrap();
+        let app = &data.applications[0];
+        assert_eq!(app.observed_secs, 10.0);
+        assert_eq!(app.cpu_avg, None);
+        assert_eq!(app.ram_avg, None);
+        assert_eq!(app.cpu_peak, None);
+        assert_eq!(app.ram_peak, None);
+        assert_eq!(app.cpu_seconds, None);
+        assert_eq!(data.series[0].points[0].cpu_avg, None);
+        assert_eq!(data.series[0].points[0].ram_avg, None);
+    }
+
+    #[test]
     fn real_database_reopens_with_weighted_summaries_and_selected_series() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.sqlite3");
@@ -315,9 +609,9 @@ mod tests {
         assert_eq!(data.recorded_secs, 20.0);
         assert_eq!(data.ram_total_bytes, 2000);
         let app = &data.applications[0];
-        assert_eq!(app.cpu_avg, 20.0);
-        assert_eq!(app.cpu_peak, 30.0);
-        assert_eq!(app.cpu_seconds, 4.0);
+        assert_eq!(app.cpu_avg, Some(20.0));
+        assert_eq!(app.cpu_peak, Some(30.0));
+        assert_eq!(app.cpu_seconds, Some(4.0));
         assert_eq!(app.gpu_avg, Some(20.0));
         assert_eq!(app.downloaded_bytes, Some(200.0));
         assert_eq!(app.network_observed_secs, 10.0);
@@ -434,8 +728,8 @@ mod tests {
                     started_at: 1,
                     name: "worker".into(),
                     executable: "/a".into(),
-                    cpu_pct: 10.0,
-                    ram_bytes: 50,
+                    cpu_pct: Some(10.0),
+                    ram_bytes: Some(50),
                     downloaded_bytes: Some(total),
                     uploaded_bytes: Some(total),
                     ..Default::default()
@@ -539,7 +833,9 @@ mod tests {
             store.save(vec![bucket(30)]).unwrap();
             store
                 .connection
-                .execute_batch("DROP TABLE history_state; PRAGMA user_version=1;")
+                .execute_batch(
+                    "DROP TABLE extra_metrics; DROP TABLE history_state; ALTER TABLE buckets DROP COLUMN cpu_observed_seconds; ALTER TABLE buckets DROP COLUMN ram_observed_seconds; PRAGMA user_version=1;",
+                )
                 .unwrap();
         }
         let mut store = Store::open(&path).unwrap();
@@ -591,8 +887,8 @@ fn seed_twelve_hours(path: &Path, end: i64, with_gap: bool) -> Result<(), String
                 started_at: start as u64,
                 name: name.into(),
                 executable: format!("/opt/history-fixture/{name}"),
-                cpu_pct: cpu,
-                ram_bytes: ram,
+                cpu_pct: Some(cpu),
+                ram_bytes: Some(ram),
                 gpu_pct: (pid == 1).then_some(15.0),
                 downloaded_bytes: (pid == 1).then_some(tick as u64 * 10000),
                 uploaded_bytes: (pid == 1).then_some(tick as u64 * 1000),
@@ -643,8 +939,8 @@ mod long_range_tests {
             .iter()
             .find(|a| a.name == "browser")
             .unwrap();
-        assert_eq!(browser.cpu_avg, 20.0);
-        assert_eq!(browser.cpu_seconds, 8640.0);
+        assert_eq!(browser.cpu_avg, Some(20.0));
+        assert_eq!(browser.cpu_seconds, Some(8640.0));
         assert_eq!(browser.downloaded_bytes, Some(86_400_000.0));
         assert_eq!(browser.gpu_avg, Some(15.0));
         query.from = end - 21600;

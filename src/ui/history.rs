@@ -36,8 +36,8 @@ enum Metric {
 impl Metric {
     fn value(self, p: &HistoryPoint) -> Option<f64> {
         match self {
-            Self::Cpu => Some(p.cpu_avg),
-            Self::Ram => Some(p.ram_avg),
+            Self::Cpu => p.cpu_avg,
+            Self::Ram => p.ram_avg,
             Self::Gpu => p.gpu_avg,
             Self::Download => p.down_bps,
             Self::Upload => p.up_bps,
@@ -45,9 +45,10 @@ impl Metric {
     }
     fn observed(self, point: &HistoryPoint) -> f64 {
         match self {
+            Self::Cpu => point.cpu_observed_secs,
+            Self::Ram => point.ram_observed_secs,
             Self::Gpu => point.gpu_observed_secs,
             Self::Download | Self::Upload => point.network_observed_secs,
-            _ => point.duration_secs,
         }
     }
     fn format(self, value: f64) -> String {
@@ -319,10 +320,26 @@ impl HistoryUi {
         egui::ScrollArea::vertical()
             .id_salt("historical-content")
             .auto_shrink([false, false])
-            .show(ui, |ui| match mode {
-                HistoryMode::Overview => self.overview(ui, &view.data),
-                HistoryMode::Applications => self.applications(ui, &view.data, false),
-                HistoryMode::Compare => self.comparison(ui, &view.data),
+            .show(ui, |ui| {
+                match mode {
+                    HistoryMode::Overview => self.overview(ui, &view.data),
+                    HistoryMode::Applications => self.applications(ui, &view.data, false),
+                    HistoryMode::Compare => self.comparison(ui, &view.data),
+                }
+                egui::CollapsingHeader::new("Дополнительные измерения: I/O, GPU и память")
+                    .show(ui, |ui| {
+                        ui.small("Среднее и пик относятся только к указанному времени покрытия. Пустой показатель не равен нулю.");
+                        for app in &view.data.applications {
+                            if !app.metrics.is_empty() && (mode == HistoryMode::Overview || self.selected == Some(app.id) || self.compare.contains(&app.id)) {
+                                ui.strong(&app.name);
+                                extra_metrics(ui, ("app-extra", app.id), &app.metrics);
+                            }
+                        }
+                        for device in &view.data.devices {
+                            ui.strong(&device.name).on_hover_text(&device.id);
+                            extra_metrics(ui, ("device-extra", &device.id), &device.metrics);
+                        }
+                    });
             });
         if let Some((from, to)) = self.pending_zoom.take() {
             self.seconds = to - from;
@@ -462,16 +479,24 @@ impl HistoryUi {
         });
         ui.add_space(12.0);
         ui.heading("Приложения с наибольшим вкладом CPU");
-        let mut apps: Vec<_> = data.applications.iter().collect();
-        apps.sort_by(|a, b| b.cpu_seconds.total_cmp(&a.cpu_seconds));
-        let total = apps.iter().map(|a| a.cpu_seconds).sum::<f64>();
+        let mut apps: Vec<_> = data
+            .applications
+            .iter()
+            .filter(|a| a.cpu_seconds.is_some())
+            .collect();
+        apps.sort_by(|a, b| {
+            b.cpu_seconds
+                .unwrap_or(-1.0)
+                .total_cmp(&a.cpu_seconds.unwrap_or(-1.0))
+        });
+        let total = apps.iter().filter_map(|a| a.cpu_seconds).sum::<f64>();
         for app in apps.iter().take(5) {
             ui.horizontal(|ui| {
                 ui.add_sized([190.0, 22.0], egui::Label::new(&app.name).truncate())
                     .on_hover_text(&app.executable);
                 ui.add(
                     egui::ProgressBar::new(if total > 0.0 {
-                        (app.cpu_seconds / total) as f32
+                        (app.cpu_seconds.unwrap_or(0.0) / total) as f32
                     } else {
                         0.0
                     })
@@ -484,7 +509,7 @@ impl HistoryUi {
                     egui::RichText::new(format!(
                         "{:.1}% вклада",
                         if total > 0.0 {
-                            app.cpu_seconds / total * 100.0
+                            app.cpu_seconds.unwrap_or(0.0) / total * 100.0
                         } else {
                             0.0
                         }
@@ -492,8 +517,9 @@ impl HistoryUi {
                     .strong(),
                 );
                 ui.label(format!(
-                    "сред. {:.1}%   пик {:.1}%",
-                    app.cpu_avg, app.cpu_peak
+                    "сред. {}   пик {}",
+                    super::format_pct(app.cpu_avg.map(|v| v as f32)),
+                    super::format_pct(app.cpu_peak.map(|v| v as f32))
                 ));
             });
         }
@@ -527,11 +553,11 @@ impl HistoryUi {
                 .color(MUTED),
             );
         });
-        ui.label(egui::RichText::new("Средние CPU/RAM рассчитаны за время наблюдения; покрытие — доля выбранного периода.").small().color(MUTED));
+        ui.label(egui::RichText::new("Средние CPU/RAM рассчитаны за доступные измерения; их покрытие показано при наведении. Время присутствия не гарантирует доступность метрики.").small().color(MUTED));
         let total_cpu = data
             .applications
             .iter()
-            .map(|app| app.cpu_seconds)
+            .filter_map(|app| app.cpu_seconds)
             .sum::<f64>();
         let query = self.search.to_lowercase();
         let mut apps: Vec<_> = data
@@ -546,12 +572,13 @@ impl HistoryUi {
             let score = |a: &ApplicationSummary| match self.ranking {
                 Ranking::Cpu => a.cpu_avg,
                 Ranking::Contribution => a.cpu_seconds,
-                Ranking::Ram => a.ram_peak as f64,
-                Ranking::Traffic => {
-                    a.downloaded_bytes.unwrap_or(0.0) + a.uploaded_bytes.unwrap_or(0.0)
-                }
+                Ranking::Ram => a.ram_peak.map(|v| v as f64),
+                Ranking::Traffic => a.downloaded_bytes.zip(a.uploaded_bytes).map(|(d, u)| d + u),
             };
-            score(b).total_cmp(&score(a)).then_with(|| a.id.cmp(&b.id))
+            score(b)
+                .unwrap_or(-1.0)
+                .total_cmp(&score(a).unwrap_or(-1.0))
+                .then_with(|| a.id.cmp(&b.id))
         });
         if !comparing
             && self.selected.is_none()
@@ -630,20 +657,13 @@ impl HistoryUi {
                             row.col(|ui| {
                                 ui.colored_label(
                                     ACCENT,
-                                    format!("{:.1} / {:.1}%", app.cpu_avg, app.cpu_peak),
+                                    format!("{} / {}", super::format_pct(app.cpu_avg.map(|v| v as f32)), super::format_pct(app.cpu_peak.map(|v| v as f32))),
                                 );
                             })
                             .1
-                            .on_hover_text(format!("Вклад: {:.1} CPU·с", app.cpu_seconds));
+                            .on_hover_text(format!("Вклад: {} CPU·с. Покрытие CPU {:.1} с, RAM {:.1} с", app.cpu_seconds.map(|v| format!("{v:.1}")).unwrap_or_else(|| "—".into()), app.cpu_observed_secs, app.ram_observed_secs));
                             row.col(|ui| {
-                                ui.label(format!(
-                                    "{:.1}%",
-                                    if total_cpu > 0.0 {
-                                        app.cpu_seconds / total_cpu * 100.0
-                                    } else {
-                                        0.0
-                                    }
-                                ));
+                                ui.label(super::format_pct(app.cpu_seconds.map(|value| if total_cpu > 0.0 { (value / total_cpu * 100.0) as f32 } else { 0.0 })));
                             })
                             .1
                             .on_hover_text(
@@ -654,8 +674,8 @@ impl HistoryUi {
                                     RAM,
                                     format!(
                                         "{} / {}",
-                                        format_bytes(app.ram_avg as u64),
-                                        format_bytes(app.ram_peak)
+                                        optional_bytes(app.ram_avg),
+                                        optional_bytes(app.ram_peak.map(|v| v as f64))
                                     ),
                                 );
                             });
@@ -1132,6 +1152,27 @@ fn plot(
     }
 }
 
+fn extra_metrics(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    values: &std::collections::BTreeMap<crate::metrics::MetricKind, HistoricalMetric>,
+) {
+    egui::Grid::new(id).striped(true).show(ui, |ui| {
+        ui.label("Показатель");
+        ui.label("Среднее");
+        ui.label("Пик");
+        ui.label("Покрытие");
+        ui.end_row();
+        for (&kind, value) in values {
+            ui.label(kind.label()).on_hover_text(kind.description());
+            ui.label(kind.format(Some(value.average)));
+            ui.label(kind.format(Some(value.peak)));
+            ui.label(format!("{:.1} с", value.observed_secs));
+            ui.end_row();
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1364,18 +1405,18 @@ mod tests {
         let points = vec![
             HistoryPoint {
                 timestamp: 30,
-                cpu_avg: 12.0,
+                cpu_avg: Some(12.0),
                 ..Default::default()
             },
             HistoryPoint {
                 timestamp: 90,
-                cpu_avg: 20.0,
+                cpu_avg: Some(20.0),
                 ..Default::default()
             },
         ];
         let point = hovered_point(&points, 45).unwrap();
         assert_eq!(point.timestamp, 30);
-        assert_eq!(point.cpu_avg, 12.0);
+        assert_eq!(point.cpu_avg, Some(12.0));
         assert!(hovered_point(&points, 60).is_none());
         assert_eq!(hovered_point(&points, 90).unwrap().timestamp, 90);
     }
@@ -1395,22 +1436,25 @@ mod tests {
             HistoryPoint {
                 timestamp: 0,
                 duration_secs: 30.0,
+                cpu_observed_secs: 30.0,
                 gpu_observed_secs: 30.0,
-                cpu_avg: 1.0,
+                cpu_avg: Some(1.0),
                 gpu_avg: Some(1.0),
                 ..Default::default()
             },
             HistoryPoint {
                 timestamp: 30,
                 duration_secs: 30.0,
-                cpu_avg: 2.0,
+                cpu_observed_secs: 30.0,
+                cpu_avg: Some(2.0),
                 ..Default::default()
             },
             HistoryPoint {
                 timestamp: 90,
                 duration_secs: 30.0,
+                cpu_observed_secs: 30.0,
                 gpu_observed_secs: 30.0,
-                cpu_avg: 3.0,
+                cpu_avg: Some(3.0),
                 gpu_avg: Some(3.0),
                 ..Default::default()
             },
@@ -1428,18 +1472,24 @@ mod tests {
     fn partially_observed_buckets_are_isolated_instead_of_bridging_unknown_time() {
         let points = vec![
             HistoryPoint {
+                cpu_avg: Some(0.0),
                 timestamp: 0,
                 duration_secs: 30.0,
+                cpu_observed_secs: 30.0,
                 ..Default::default()
             },
             HistoryPoint {
+                cpu_avg: Some(0.0),
                 timestamp: 30,
                 duration_secs: 12.0,
+                cpu_observed_secs: 12.0,
                 ..Default::default()
             },
             HistoryPoint {
+                cpu_avg: Some(0.0),
                 timestamp: 60,
                 duration_secs: 30.0,
+                cpu_observed_secs: 30.0,
                 ..Default::default()
             },
         ];
@@ -1452,10 +1502,51 @@ mod tests {
         );
     }
     #[test]
+    fn unavailable_cpu_breaks_cpu_chart_without_hiding_known_ram() {
+        let points = [
+            HistoryPoint {
+                timestamp: 0,
+                duration_secs: 30.0,
+                cpu_avg: Some(10.0),
+                cpu_observed_secs: 30.0,
+                ram_avg: Some(100.0),
+                ram_observed_secs: 30.0,
+                ..Default::default()
+            },
+            HistoryPoint {
+                timestamp: 30,
+                duration_secs: 30.0,
+                cpu_avg: None,
+                cpu_observed_secs: 0.0,
+                ram_avg: Some(200.0),
+                ram_observed_secs: 30.0,
+                ..Default::default()
+            },
+            HistoryPoint {
+                timestamp: 60,
+                duration_secs: 30.0,
+                cpu_avg: Some(30.0),
+                cpu_observed_secs: 30.0,
+                ram_avg: Some(300.0),
+                ram_observed_secs: 30.0,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            segments(&points, Metric::Cpu),
+            vec![vec![(0, 10.0)], vec![(60, 30.0)]]
+        );
+        assert_eq!(
+            segments(&points, Metric::Ram),
+            vec![vec![(0, 100.0), (30, 200.0), (60, 300.0)]]
+        );
+    }
+
+    #[test]
     fn nonfinite_values_break_charts_and_coverage_is_bounded() {
         let points = vec![HistoryPoint {
             timestamp: 0,
-            cpu_avg: f64::NAN,
+            cpu_avg: Some(f64::NAN),
             ..Default::default()
         }];
         assert!(segments(&points, Metric::Cpu).is_empty());

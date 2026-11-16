@@ -87,6 +87,65 @@ pub fn live_summary(ui: &mut egui::Ui, snap: &Snapshot) {
             history::NETWORK,
         );
     });
+    egui::CollapsingHeader::new(format!("Логические CPU ({})", snap.logical_cpu_count))
+        .show(ui, |ui| {
+            let mean = crate::model::logical_cpu_average(&snap.logical_cpus);
+            ui.label(format!("Среднее логических CPU: {} · общий CPU: {}", format_pct(mean), format_pct(ready.then_some(snap.cpu_pct))));
+            ui.small("Каждый логический CPU: 0–100%. CPU процессов нормализован по мощности всего хоста. Небольшие отличия среднего от общего возможны из-за округления и интервалов ОС.");
+            if snap.logical_cpus.len() < snap.logical_cpu_count { ui.label(format!("Показаны {} из {} логических CPU", snap.logical_cpus.len(), snap.logical_cpu_count)); }
+            let columns = ((ui.available_width()/100.0) as usize).clamp(2,16);
+            egui::ScrollArea::vertical().id_salt("logical-cpu-scroll").max_height(180.0).show_rows(ui, 50.0, snap.logical_cpus.len().div_ceil(columns), |ui, visible| {
+                egui::Grid::new("logical-cpu-grid").num_columns(columns).show(ui, |ui| {
+                    for index in visible.start*columns .. (visible.end*columns).min(snap.logical_cpus.len()) {
+                        let usage = &snap.logical_cpus[index];
+                        ui.vertical(|ui| {
+                            ui.small(format!("CPU {index}: {}", format_pct(*usage)));
+                            if let Some(value) = usage { ui.add(egui::ProgressBar::new(value/100.0).desired_width(86.0).fill(ACCENT)); }
+                            else { ui.monospace("—"); }
+                        });
+                        if (index+1)%columns == 0 { ui.end_row(); }
+                    }
+                });
+            });
+        });
+    egui::CollapsingHeader::new("Температуры и thermal-состояния")
+        .show(ui, |ui| {
+            ui.label(&snap.thermal.status);
+            let Some(updated) = snap.thermal.updated_at.filter(|at| at.elapsed().as_secs() <= 12) else {
+                ui.label("Свежий источник температур недоступен. Отсутствие показателя не равно нулю."); return;
+            };
+            ui.small(format!("Обновлено {:.1} с назад. Thermal-события — за последний интервал источника, не доказательство текущего троттлинга.", updated.elapsed().as_secs_f64()));
+            egui::ScrollArea::vertical().id_salt("thermal-rows").max_height(200.0).show_rows(ui, 26.0, snap.thermal.readings.len(), |ui, visible| {
+                egui::Grid::new("thermal-grid").striped(true).show(ui, |ui| {
+                    for row in &snap.thermal.readings[visible] {
+                        ui.label(&row.label).on_hover_text(format!("{}\n{}", row.id, row.source));
+                        ui.monospace(row.celsius.map_or_else(|| "—".into(), |v| format!("{v:.1} °C")));
+                        ui.label(match row.throttled { Some(true) => "Thermal flag: активен", Some(false) => "Thermal flag: неактивен", None => "Thermal flag: —" });
+                        ui.label(row.thermal_events.map_or_else(|| "Новые thermal-события: —".into(), |v| format!("Новые thermal-события: {v}")));
+                        ui.end_row();
+                    }
+                });
+            });
+            ui.small("ACPI-зона не обязательно CPU. Высокая температура или низкая частота сами по себе не объявляются троттлингом.");
+        });
+    egui::CollapsingHeader::new("Накопители: физическая активность")
+        .show(ui, |ui| {
+            ui.label(&snap.disk_status);
+            let mut disks = snap.devices.iter().collect::<Vec<_>>();
+            let key = crate::metrics::MetricKind::DiskActive;
+            disks.sort_by(|a,b| b.metrics.get(&key).copied().unwrap_or(-1.0).total_cmp(&a.metrics.get(&key).copied().unwrap_or(-1.0)));
+            egui::Grid::new("physical-disks").striped(true).show(ui, |ui| {
+                ui.label("Устройство"); ui.label("Чтение/с"); ui.label("Запись/с"); ui.label("Активность"); ui.end_row();
+                for disk in disks {
+                    ui.label(&disk.name).on_hover_text(&disk.id);
+                    for kind in [crate::metrics::MetricKind::IoRead, crate::metrics::MetricKind::IoWrite, key] {
+                        ui.label(kind.format(disk.metrics.get(&kind).copied()));
+                    }
+                    ui.end_row();
+                }
+            });
+            ui.small("I/O процесса и активность накопителя — разные источники. Связь PID → диск не выводится предположительно.");
+        });
 }
 
 pub fn summary(ui: &mut egui::Ui, snap: &Snapshot, history: &VecDeque<(Instant, f32, f32)>) {

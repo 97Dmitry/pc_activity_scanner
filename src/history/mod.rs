@@ -463,8 +463,8 @@ mod tests {
                 started_at: 1,
                 name: "a".into(),
                 executable: "/a".into(),
-                cpu_pct: 10.0,
-                ram_bytes: 50,
+                cpu_pct: Some(10.0),
+                ram_bytes: Some(50),
                 ..Default::default()
             }],
             ..Default::default()
@@ -746,7 +746,7 @@ mod tests {
                 data.recorded_secs, 2.0,
                 "queued samples lost with enabled={enabled}"
             );
-            assert_eq!(data.applications[0].cpu_seconds, 0.2);
+            assert_eq!(data.applications[0].cpu_seconds, Some(0.2));
         }
     }
 }
