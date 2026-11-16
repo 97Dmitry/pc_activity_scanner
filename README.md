@@ -1,7 +1,7 @@
 # PC Activity Scanner
 
-> В текущем checkout реализовано развитие по восьми направлениям; эти изменения
-> ещё не опубликованы в релизе 0.5.0. Проверки и локальная Windows-сборка —
+> Версия 0.6.0: диски, GPU/VRAM Windows, дерево процессов, подробная память,
+> соединения, логические CPU, датчики и уведомления. Источники и границы проверки —
 > в [отчёте](docs/RESOURCE_VERIFICATION.md).
 
 Локальный монитор процессов на Rust/egui для Windows и Linux. Показывает нагрузку
@@ -26,8 +26,8 @@ CPU, память и общий сетевой трафик; доступные 
 
 | Система | Файл |
 |---|---|
-| Windows 11 x64 | `pc_activity_scanner-v0.5.0-windows-x86_64.exe` |
-| Linux x86_64 | `pc_activity_scanner-v0.5.0-linux-x86_64` |
+| Windows 11 x64 | `pc_activity_scanner-v0.6.0-windows-x86_64.exe` |
+| Linux x86_64 | `pc_activity_scanner-v0.6.0-linux-x86_64` |
 | Контрольные суммы | `SHA256SUMS.txt` |
 
 Rust для запуска не требуется. Windows-сборка запускается двойным кликом.
@@ -37,19 +37,19 @@ Ubuntu/Kubuntu:
 ```bash
 sudo apt update
 sudo apt install libx11-6 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxkbcommon0 libwayland-client0 libgl1 libegl1 libxcursor1 libxi6 libxrandr2 libxkbcommon-x11-0
-chmod +x pc_activity_scanner-v0.5.0-linux-x86_64
-./pc_activity_scanner-v0.5.0-linux-x86_64
+chmod +x pc_activity_scanner-v0.6.0-linux-x86_64
+./pc_activity_scanner-v0.6.0-linux-x86_64
 ```
 
 Также доступны комплекты с программой, README и лицензией:
-`pc-activity-scanner-v0.5.0-windows-x86_64.zip` и
-`pc-activity-scanner-v0.5.0-linux-x86_64.tar.gz`.
+`pc-activity-scanner-v0.6.0-windows-x86_64.zip` и
+`pc-activity-scanner-v0.6.0-linux-x86_64.tar.gz`.
 **Source code** внизу списка — исходники, а не готовые программы.
 
-Релизы выходят по версиям (`v0.5.0`, `v0.2.1`, …), после успешных проверок и
+Релизы выходят по версиям (`v0.6.0`, `v0.2.1`, …), после успешных проверок и
 сборок обеих ОС. Обычный push в `main` запускает CI без публикации snapshot.
 Бинарники не подписаны; известные ограничения и объём проверок указаны в
-[описании релиза](docs/releases/v0.5.0.md). Порядок публикации —
+[описании релиза](docs/releases/v0.6.0.md). Порядок публикации —
 [RELEASING.md](docs/RELEASING.md).
 
 ## Windows: сеть и автозапуск
@@ -154,7 +154,7 @@ root и быть защищены от записи другими пользо�
 
 ```bash
 sudo apt install nethogs policykit-1
-sudo install -D -o root -g root -m 0755 pc_activity_scanner-v0.5.0-linux-x86_64 /usr/local/bin/pc-activity-scanner
+sudo install -D -o root -g root -m 0755 pc_activity_scanner-v0.6.0-linux-x86_64 /usr/local/bin/pc-activity-scanner
 pc-activity-scanner
 ```
 

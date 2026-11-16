@@ -1,6 +1,6 @@
 # PC Activity Scanner — product specification (SDD)
 
-Status: working-tree development based on version 0.5.0; these additions are not published. Supported signals are listed below.
+Version: 0.6.0. Supported signals and their availability contracts are listed below.
 
 ## Objective
 
