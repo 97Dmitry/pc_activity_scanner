@@ -109,6 +109,8 @@ This project is not declared production-ready until the following pass on actual
 
 ## Extended resources / stage 3
 
+- [ ] Group disclosure uses a drawn triangle (no missing-font square); clicking
+  either the triangle or name expands/collapses. Single processes have no square.
 - [ ] Expand/collapse a same-name group, sort members and search one PID/path;
   group totals include only matching members. Unknown member stays unknown.
 - [ ] Switch to tree: equal names never imply parenthood. Exit/reuse a parent

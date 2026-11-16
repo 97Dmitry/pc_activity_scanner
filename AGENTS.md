@@ -71,3 +71,6 @@
 - Graceful quit signals collector/delivery and polls completion, never joins on
   GUI. Preserve command parent-death ownership and the documented Windows birth
   race rather than adding arbitrary privileged process management.
+- Draw process disclosure indicators with egui geometry, not Unicode arrow
+  characters: the bundled proportional font lacks those glyphs. Preserve the
+  shared triangle/name click target and text-only names in copy/export.

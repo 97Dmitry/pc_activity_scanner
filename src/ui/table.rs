@@ -100,11 +100,23 @@ pub fn process_table(
                                     } else {
                                         row.name.clone()
                                     };
-                                    let prefix = if row.is_group { if view.is_group_expanded(&row.name) { "▼ " } else { "▶ " } } else { "" };
-                                    let name = format!("{}{}{}", "  ".repeat(row.view_depth.min(16)), prefix, name);
-                                    let response = ui
-                                        .add(egui::Button::selectable(selected, &name).truncate())
-                                        .on_hover_text(format!("{name}\n{}", row.executable));
+                                    let name = format!("{}{}", "  ".repeat(row.view_depth.min(16)), name);
+                                    let response = ui.horizontal(|ui| {
+                                        let (_, icon) = ui.allocate_exact_size(
+                                            egui::vec2(14.0, 14.0),
+                                            if row.is_group { egui::Sense::click() } else { egui::Sense::hover() },
+                                        );
+                                        if row.is_group {
+                                            // Paint geometry: text arrow glyphs are absent from the bundled font.
+                                            egui::collapsing_header::paint_default_icon(
+                                                ui,
+                                                f32::from(view.is_group_expanded(&row.name)),
+                                                &icon,
+                                            );
+                                        }
+                                        ui.add(egui::Button::selectable(selected, &name).truncate())
+                                            .union(icon)
+                                    }).inner.on_hover_text(format!("{name}\n{}", row.executable));
                                     if response.clicked() {
                                         if row.is_group { view.toggle_group(&row.name); ui.ctx().request_repaint(); }
                                         else { *selected_process = Some(row.identity()); }
