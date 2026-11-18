@@ -42,7 +42,7 @@ jobs:
         run: |
           python scripts/release.py validate "$GITHUB_REF_NAME"
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
